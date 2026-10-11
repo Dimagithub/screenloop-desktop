@@ -1,7 +1,7 @@
 //! macOS recorder: drives an ffmpeg child (avfoundation) that writes playable MP4 parts
 //! plus a matching audio-only WebM/Opus part for transcripts.
-// ponytail: system ffmpeg + avfoundation for the spike; swap for ScreenCaptureKit
-// (excludes our own windows, system audio) and a bundled ffmpeg sidecar before shipping.
+// ponytail: ffmpeg + avfoundation; swap for ScreenCaptureKit (excludes our own windows,
+// system audio) when the floating controls land.
 use serde::Serialize;
 use std::io::Write;
 use std::path::PathBuf;
@@ -46,11 +46,15 @@ pub struct Finished {
     duration_seconds: u32,
 }
 
-const FFMPEG: &str = "ffmpeg"; // ponytail: PATH lookup; bundle as a Tauri sidecar
+/// Bundled LGPL ffmpeg sidecar (next to the app binary); falls back to PATH when running from source.
+fn ffmpeg() -> std::path::PathBuf {
+    let bundled = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("ffmpeg")));
+    bundled.filter(|p| p.exists()).unwrap_or_else(|| "ffmpeg".into())
+}
 
 #[tauri::command]
 pub fn list_devices() -> Result<Devices, String> {
-    let out = Command::new(FFMPEG)
+    let out = Command::new(ffmpeg())
         .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .output()
         .map_err(|e| format!("ffmpeg not found: {e}"))?;
@@ -97,10 +101,10 @@ pub fn start_recording(
     let input = format!("{}:{}", screen, mic.as_deref().unwrap_or("none"));
     let seg = chunk_seconds.max(120).to_string();
     let b = bitrate(height, fps);
-    let mut cmd = Command::new(FFMPEG);
+    let mut cmd = Command::new(ffmpeg());
     cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "avfoundation", "-capture_cursor", "1", "-framerate", &fps.to_string(), "-i", &input]);
     // Output 1: video(+mic) parts.
-    cmd.args(["-map", "0:v", "-vf", &format!("scale=-2:{height}"), "-c:v", "libx264", "-preset", "veryfast", "-b:v", &b.to_string(), "-pix_fmt", "yuv420p", "-g", &(fps * 2).to_string(), "-force_key_frames", &format!("expr:gte(t,n_forced*{seg})")]);
+    cmd.args(["-map", "0:v", "-vf", &format!("scale=-2:{height}"), "-c:v", "h264_videotoolbox", "-realtime", "1", "-b:v", &b.to_string(), "-pix_fmt", "yuv420p", "-g", &(fps * 2).to_string(), "-force_key_frames", &format!("expr:gte(t,n_forced*{seg})")]);
     if mic.is_some() {
         cmd.args(["-map", "0:a", "-c:a", "aac", "-b:a", "64k"]);
     }

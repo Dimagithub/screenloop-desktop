@@ -1,0 +1,32 @@
+name: Build ffmpeg
+# Manual: builds the LGPL ffmpeg sidecar for macOS and attaches it to release "ffmpeg-<tag suffix>".
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to attach to"
+        default: ffmpeg-7.1.1-1
+jobs:
+  build:
+    permissions:
+      contents: write
+    strategy:
+      matrix:
+        include:
+          - { runner: macos-latest, arch: arm64, triple: aarch64-apple-darwin }
+          - { runner: macos-15-intel, arch: x86_64, triple: x86_64-apple-darwin }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install nasm pkg-config
+      - run: scripts/build-ffmpeg.sh ${{ matrix.arch }} ffmpeg-${{ matrix.triple }}
+      - name: Smoke test (run, encoders)
+        run: |
+          ./ffmpeg-${{ matrix.triple }} -hide_banner -encoders | grep -E "h264_videotoolbox|libopus"
+          ./ffmpeg-${{ matrix.triple }} -hide_banner -devices 2>&1 | grep avfoundation
+      - run: shasum -a 256 ffmpeg-${{ matrix.triple }} | tee ffmpeg-${{ matrix.triple }}.sha256
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || gh release create "${{ inputs.tag }}" -t "${{ inputs.tag }}" -n "LGPL ffmpeg sidecar. Built by scripts/build-ffmpeg.sh from the official ffmpeg and opus source tarballs." || true
+          gh release upload "${{ inputs.tag }}" ffmpeg-${{ matrix.triple }} ffmpeg-${{ matrix.triple }}.sha256 --clobber

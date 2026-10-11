@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
 import { api, tokenFromInput, type ResolvedLink } from "./lib/api";
+import Recorder from "./Recorder";
 import "./App.css";
 
 type Session_ = { token: string; link: ResolvedLink } | null;
@@ -55,16 +56,7 @@ function Home({ session }: { session: Session | null }) {
     }
   };
 
-  if (rec)
-    return (
-      <div className="col">
-        <h1>{rec.link.title}</h1>
-        {rec.link.sender && <p>From {rec.link.sender.name}</p>}
-        <ul>{rec.link.prompts?.map((p) => <li key={p}>{p}</li>)}</ul>
-        <p>Recorder coming next (native capture).</p>
-        <button onClick={() => setRec(null)}>Back</button>
-      </div>
-    );
+  if (rec) return <Recorder token={rec.token} link={rec.link} onDone={() => setRec(null)} />;
 
   return (
     <div className="col">

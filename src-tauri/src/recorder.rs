@@ -8,7 +8,9 @@ use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Instant;
+use std::collections::HashSet;
 use tauri::{Manager, State};
+use crate::sysaudio::{self, SysCapture, SysInfo};
 
 
 #[derive(Serialize)]
@@ -107,6 +109,8 @@ struct Session {
     screen: String,
     mic: Option<String>,
     audio_only: bool,
+    system_audio: bool,
+    mixed: HashSet<u32>,
     height: u32,
     fps: u32,
     seg: u32,
@@ -123,6 +127,7 @@ struct Run {
     start: f64,
     len: f64,
     audio: bool,
+    sys: Option<SysInfo>,
 }
 
 struct Cur {
@@ -130,6 +135,7 @@ struct Cur {
     started: Instant,
     first_part: u32,
     audio: bool,
+    sys: Option<SysCapture>,
 }
 
 #[derive(Serialize, Clone)]
@@ -176,6 +182,38 @@ fn make_part(dir: &std::path::Path, n: u32, audio_only: bool, with_audio: bool, 
     Some(Part { n, path: path.to_string_lossy().into(), audio_path, start_seconds: start.round() as u32, duration_seconds: dur.round() as u32, size_bytes: meta.len() })
 }
 
+/// Where computer audio starts relative to the ffmpeg run (ffmpeg takes a moment to produce its first frame).
+// ponytail: fixed calibration constant; measure per machine if lip-sync of system sounds matters
+const SYS_AUDIO_LEAD_SECS: f64 = 0.4;
+
+/// Replace `file`'s audio with its own audio mixed with the computer audio (or just the computer audio
+/// when the file had none). Video is copied untouched. Returns false (file left as it was) on any failure.
+fn mix_into(file: &std::path::Path, sys: &SysInfo, offset: f64, dur: f64, has_audio: bool, codec: &str, br: &str, container: &str) -> bool {
+    if std::fs::metadata(&sys.path).map(|m| m.len()).unwrap_or(0) < (sys.rate as u64 * sys.channels as u64 * 4) {
+        return false; // less than a second of sound: nothing to mix
+    }
+    let tmp = file.with_extension(format!("mix.{container}"));
+    let mut c = hidden(Command::new(ffmpeg()));
+    c.args(["-hide_banner", "-loglevel", "error", "-y", "-i"]).arg(file);
+    c.args(["-ss", &format!("{offset:.3}"), "-t", &format!("{dur:.3}"), "-f", "f32le", "-ar", &sys.rate.to_string(), "-ac", &sys.channels.to_string(), "-i"]).arg(&sys.path);
+    let video = container == "mp4";
+    let filter = if has_audio { "[0:a][1:a]amix=inputs=2:duration=first:normalize=0[a]" } else { "[1:a]anull[a]" };
+    c.args(["-filter_complex", filter]);
+    if video {
+        c.args(["-map", "0:v", "-c:v", "copy"]);
+    }
+    c.args(["-map", "[a]", "-c:a", codec, "-b:a", br, "-t", &format!("{dur:.3}")]);
+    if video {
+        c.args(["-movflags", "frag_keyframe+empty_moov+default_base_moof"]);
+    }
+    c.arg(&tmp);
+    let ok = c.output().map(|o| o.status.success()).unwrap_or(false) && std::fs::rename(&tmp, file).is_ok();
+    if !ok {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    ok
+}
+
 impl Session {
     fn elapsed(&self) -> f64 {
         self.clock + self.cur.as_ref().map_or(0.0, |c| c.started.elapsed().as_secs_f64())
@@ -203,7 +241,8 @@ impl Session {
             cmd.args(["-vn", "-c:a", "libopus", "-b:a", "32k", "-f", "segment", "-segment_time", &seg, "-segment_format", "webm", "-reset_timestamps", "1", "-segment_start_number", &n])
                 .arg(self.dir.join("p%d.voice.webm"));
             let child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
-            self.cur = Some(Cur { child, started: Instant::now(), first_part: self.next_part, audio: true });
+            let sys = self.start_sys();
+            self.cur = Some(Cur { child, started: Instant::now(), first_part: self.next_part, audio: true, sys });
             return Ok(());
         }
         let (audio_in, vf, venc): (usize, String, Vec<String>);
@@ -239,7 +278,8 @@ impl Session {
                 .arg(self.dir.join("p%d.audio.webm"));
         }
         let child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
-        self.cur = Some(Cur { child, started: Instant::now(), first_part: self.next_part, audio });
+        let sys = self.start_sys();
+        self.cur = Some(Cur { child, started: Instant::now(), first_part: self.next_part, audio, sys });
         Ok(())
     }
 
@@ -250,13 +290,65 @@ impl Session {
             let _ = stdin.write_all(b"q"); // graceful: lets ffmpeg finalize the files
         }
         let _ = c.child.wait();
+        let sys = c.sys.take().map(|x| x.stop());
         let mut n = c.first_part;
         while main_file(&self.dir, n, self.audio_only).exists() {
             n += 1;
         }
-        self.runs.push(Run { first_part: c.first_part, start: self.clock, len, audio: c.audio });
+        self.runs.push(Run { first_part: c.first_part, start: self.clock, len, audio: c.audio, sys });
         self.clock += len;
         self.next_part = n.max(c.first_part + 1);
+    }
+
+    fn start_sys(&self) -> Option<SysCapture> {
+        if !self.system_audio {
+            return None;
+        }
+        match sysaudio::start(&self.dir.join(format!("sys_{}.raw", self.next_part))) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                eprintln!("system audio unavailable: {e}"); // recording continues without it
+                None
+            }
+        }
+    }
+
+    /// Mix the computer audio of a run into its finished parts (video + transcript audio), once per part.
+    fn mix_ready(&mut self, include_current: bool) {
+        let seg = self.seg as f64;
+        let parts = self.parts(include_current);
+        for p in parts {
+            if self.mixed.contains(&p.n) {
+                continue;
+            }
+            // The run that produced this part is the latest one that started at or before it.
+            let mut owner: Option<(u32, SysInfo, bool)> = None;
+            for r in &self.runs {
+                if r.first_part <= p.n {
+                    owner = r.sys.clone().map(|i| (r.first_part, i, r.audio));
+                }
+            }
+            if let Some(c) = &self.cur {
+                if c.first_part <= p.n {
+                    owner = c.sys.as_ref().map(|x| (c.first_part, x.info.clone(), c.audio));
+                }
+            }
+            let Some((first, sys, has_mic)) = owner else { continue };
+            let offset = SYS_AUDIO_LEAD_SECS + (p.n - first) as f64 * seg;
+            let dur = p.duration_seconds as f64;
+            let ok = if self.audio_only {
+                mix_into(std::path::Path::new(&p.path), &sys, offset, dur, has_mic, "libopus", "32k", "webm")
+            } else {
+                let a = mix_into(std::path::Path::new(&p.path), &sys, offset, dur, has_mic, "aac", "64k", "mp4");
+                if !p.audio_path.is_empty() {
+                    mix_into(std::path::Path::new(&p.audio_path), &sys, offset, dur, has_mic, "libopus", "32k", "webm");
+                }
+                a
+            };
+            if ok {
+                self.mixed.insert(p.n);
+            }
+        }
     }
 
     /// Parts that will not change any more: every part of finished runs, and all but the newest of the current run.
@@ -293,6 +385,7 @@ pub fn start_recording(
     screen: String,
     mic: Option<String>,
     audio_only: bool,
+    system_audio: bool,
     height: u32,
     fps: u32,
     chunk_seconds: u32,
@@ -303,7 +396,7 @@ pub fn start_recording(
     }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("recordings").join(uuid());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let mut s = Session { dir: dir.clone(), screen, mic, audio_only, height, fps, seg: chunk_seconds.max(120), muted: false, paused: false, next_part: 1, clock: 0.0, runs: vec![], cur: None };
+    let mut s = Session { dir: dir.clone(), screen, mic, audio_only, system_audio, mixed: HashSet::new(), height, fps, seg: chunk_seconds.max(120), muted: false, paused: false, next_part: 1, clock: 0.0, runs: vec![], cur: None };
     s.begin_run()?;
     *slot = Some(s);
     Ok(dir.to_string_lossy().into())
@@ -359,13 +452,17 @@ pub fn recording_state(state: State<Recorder>) -> Result<State_, String> {
 /// Parts that are final while recording continues (for background upload).
 #[tauri::command]
 pub fn completed_parts(state: State<Recorder>) -> Result<Vec<Part>, String> {
-    with(&state, |s| Ok(s.parts(true)))
+    with(&state, |s| {
+        s.mix_ready(true);
+        Ok(s.parts(true))
+    })
 }
 
 #[tauri::command]
 pub fn stop_recording(state: State<Recorder>) -> Result<Finished, String> {
     let mut s = state.0.lock().unwrap().take().ok_or("Not recording")?;
     s.end_run();
+    s.mix_ready(false);
     let parts = s.parts(false);
     if parts.is_empty() {
         return Err("Nothing was recorded. Check Screen Recording and Microphone permission for ScreenLoop.".into());

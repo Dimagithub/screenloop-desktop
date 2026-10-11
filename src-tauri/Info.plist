@@ -3,4 +3,5 @@
 <plist version="1.0"><dict>
   <key>NSMicrophoneUsageDescription</key><string>ScreenLoop records your voice while you record your screen.</string>
   <key>NSScreenCaptureUsageDescription</key><string>ScreenLoop records your screen for feedback recordings.</string>
+  <key>NSAudioCaptureUsageDescription</key><string>ScreenLoop can record the sound your computer plays, such as a video you are discussing.</string>
 </dict></plist>

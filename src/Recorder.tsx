@@ -57,6 +57,7 @@ export default function Recorder({ token, link, onDone, resume }: { token: strin
   const [voiceOnly, setVoiceOnly] = useState(resume?.manifest.voiceOnly ?? false);
   const [stage, setStage] = useState<"setup" | "countdown" | "recording" | "review" | "sending" | "sent">(resume ? "review" : "setup");
   const [count, setCount] = useState(3);
+  const [sysAudio, setSysAudio] = useState(true);
   const [done, setDone] = useState<Finished | null>(null);
   const [comments, setComments] = useState<Comment[]>(resume?.manifest.comments ?? []);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -168,7 +169,7 @@ export default function Recorder({ token, link, onDone, resume }: { token: strin
     const [h, fps] = QUALITY[quality];
     try {
       localStorage.setItem(SESSION_KEY, JSON.stringify({ prompts: link.prompts ?? [], screen, hasMic: !!mic, voiceOnly, maxSeconds: (link.maxDurationMin ?? 0) * 60 }));
-      dirRef.current = await invoke<string>("start_recording", { screen, mic: mic || null, audioOnly: voiceOnly, height: h, fps, chunkSeconds: chunk });
+      dirRef.current = await invoke<string>("start_recording", { screen, mic: mic || null, audioOnly: voiceOnly, systemAudio: sysAudio, height: h, fps, chunkSeconds: chunk });
       persist();
       await invoke("open_controls");
       setStage("recording");
@@ -306,6 +307,7 @@ export default function Recorder({ token, link, onDone, resume }: { token: strin
           <div className="seg" role="group" aria-label="Mode"><button className={!voiceOnly ? "on" : ""} onClick={() => setVoiceOnly(false)}>Screen and voice</button><button className={voiceOnly ? "on" : ""} onClick={() => setVoiceOnly(true)}>Voice only</button></div>
           {!voiceOnly && <div className="field"><label htmlFor="scr">Screen</label><select id="scr" className="input" value={screen} onChange={(e) => setScreen(e.target.value)}>{screens.map((d) => <option key={d.index} value={d.index}>{d.name}</option>)}</select></div>}
           <div className="field"><label htmlFor="mic">Microphone</label><select id="mic" className="input" value={mic} onChange={(e) => setMic(e.target.value)}>{!voiceOnly && <option value="">No microphone</option>}{mics.map((d) => <option key={d.index} value={d.index}>{d.name}</option>)}</select></div>
+          <label className="check"><input type="checkbox" checked={sysAudio} onChange={(e) => setSysAudio(e.target.checked)} />Include computer audio <span className="muted">(what you hear, e.g. a video you play)</span></label>
           {!voiceOnly && <div className="seg" role="group" aria-label="Quality">{(Object.keys(QUALITY) as Quality[]).map((q) => <button key={q} className={q === quality ? "on" : ""} onClick={() => setQuality(q)}>{LABEL[q]}</button>)}</div>}
           <div className="spacer" />
           {msg && <p className="err">{msg}</p>}

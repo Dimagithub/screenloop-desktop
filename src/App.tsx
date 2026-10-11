@@ -4,7 +4,11 @@ import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { supabase } from "./lib/supabase";
 import { api, tokenFromInput, type ResolvedLink } from "./lib/api";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import Recorder from "./Recorder";
+import UploadVideo from "./UploadVideo";
 
 type Rec = { token: string; link: ResolvedLink };
 interface Recent { id: string; title: string; created_at: string; duration_seconds: number; transcript_status: string | null }
@@ -17,17 +21,37 @@ function SignIn({ onBack }: { onBack: () => void }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [err, setErr] = useState("");
+  const [waiting, setWaiting] = useState(false);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     if (error) setErr(error.message); else onBack();
   };
+  // Google (and email on the web page): sign in in the system browser, tokens come back over a loopback port.
+  const browser = async () => {
+    setErr(""); setWaiting(true);
+    try {
+      const state = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, "0")).join("");
+      const un = await listen<string>("auth-callback", async (ev) => {
+        un();
+        const q = new URLSearchParams(ev.payload);
+        if (q.get("state") !== state) { setErr("Sign-in was not recognised. Try again."); return setWaiting(false); }
+        const { error } = await supabase.auth.setSession({ access_token: q.get("access_token") ?? "", refresh_token: q.get("refresh_token") ?? "" });
+        if (error) setErr(error.message); else onBack();
+        setWaiting(false);
+      });
+      const port = await invoke<number>("start_auth_listener");
+      await openUrl(`${import.meta.env.VITE_WEB_URL}/desktop-auth?port=${port}&state=${state}`);
+    } catch (e) { setErr(String(e)); setWaiting(false); }
+  };
   return (
     <form className="sendbox" onSubmit={submit} style={{ width: 340, textAlign: "left" }}>
       <h1 style={{ fontSize: 28 }}>Sign in</h1>
+      <button type="button" className="btn lime big" style={{ height: 48, fontSize: 15 }} onClick={browser} disabled={waiting}>{waiting ? "Finish signing in in your browser…" : "Continue with Google"}</button>
+      <div className="muted" style={{ textAlign: "center", width: "100%" }}>or</div>
       <input className="input" style={{ width: "100%" }} aria-label="Email" placeholder="Email" value={email} onChange={(e) => setEmail(e.target.value)} />
       <input className="input" style={{ width: "100%" }} aria-label="Password" placeholder="Password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} />
-      <button className="btn lime big">Sign in</button>
+      <button className="btn lime big" style={{ height: 48, fontSize: 15 }}>Sign in</button>
       <button type="button" className="linkbtn" onClick={onBack}>Back</button>
       {err && <p className="err">{err}</p>}
     </form>
@@ -49,7 +73,7 @@ function UpdateLink() {
   return <><button className="linkbtn" onClick={run}>Check for updates</button>{msg && <span>{msg}</span>}</>;
 }
 
-function Home({ session, onOpen }: { session: Session | null; onOpen: (r: Rec) => void }) {
+function Home({ session, onOpen, onUpload }: { session: Session | null; onOpen: (r: Rec) => void; onUpload: () => void }) {
   const [input, setInput] = useState("");
   const [err, setErr] = useState("");
   const [recent, setRecent] = useState<Recent[]>([]);
@@ -85,8 +109,8 @@ function Home({ session, onOpen }: { session: Session | null; onOpen: (r: Rec) =
         <button className="tile" onClick={() => document.getElementById("link")?.focus()}>
           <div className="ico"><Icon d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1|M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1-1" /></div><div><b>Open a link</b><span>Someone asked for feedback</span></div>
         </button>
-        <button className="tile" disabled title="Coming soon">
-          <div className="ico"><Icon d="M12 16V4|m7 9 5-5 5 5|M5 20h14" /></div><div><b>Upload a video</b><span>Coming soon</span></div>
+        <button className="tile" onClick={onUpload} disabled={!session} title={session ? "" : "Sign in to upload"}>
+          <div className="ico"><Icon d="M12 16V4|m7 9 5-5 5 5|M5 20h14" /></div><div><b>Upload a video</b><span>Use an existing file</span></div>
         </button>
       </div>
       <form className="joinbar" onSubmit={(e) => { e.preventDefault(); openLink(input); }}>
@@ -115,12 +139,14 @@ export default function App() {
   const [ready, setReady] = useState(false);
   const [signIn, setSignIn] = useState(false);
   const [rec, setRec] = useState<Rec | null>(null);
+  const [upload, setUpload] = useState(false);
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setReady(true); });
     const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => data.subscription.unsubscribe();
   }, []);
   if (!ready) return null;
+  if (upload) return <div className="app"><div className="topbar"><div className="brand"><div className="logo"><i /></div>ScreenLoop</div></div><UploadVideo onDone={() => setUpload(false)} /></div>;
   if (rec) return <div className="app"><Recorder token={rec.token} link={rec.link} onDone={() => setRec(null)} /></div>;
   return (
     <div className="app">
@@ -130,7 +156,7 @@ export default function App() {
           ? <div style={{ display: "flex", alignItems: "center", gap: 12 }}><span className="muted">{session.user.email}</span><div className="avatar">{(session.user.email ?? "?").slice(0, 2).toUpperCase()}</div><button className="linkbtn" onClick={() => supabase.auth.signOut()}>Sign out</button></div>
           : <button className="linkbtn" onClick={() => setSignIn(true)}>Sign in</button>}
       </div>
-      {signIn && !session ? <div className="page" style={{ justifyContent: "center" }}><SignIn onBack={() => setSignIn(false)} /></div> : <Home session={session} onOpen={setRec} />}
+      {signIn && !session ? <div className="page" style={{ justifyContent: "center" }}><SignIn onBack={() => setSignIn(false)} /></div> : <Home session={session} onOpen={setRec} onUpload={() => setUpload(true)} />}
       <div className="footer">Version {__APP_VERSION__} · <UpdateLink /></div>
     </div>
   );

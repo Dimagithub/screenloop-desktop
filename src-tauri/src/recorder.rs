@@ -461,3 +461,48 @@ pub fn close_controls(app: tauri::AppHandle) {
 fn uuid() -> String {
     format!("{:x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos())
 }
+
+#[derive(Serialize)]
+pub struct AudioSeg {
+    path: String,
+    start: u32,
+}
+
+#[derive(Serialize)]
+pub struct Extracted {
+    segments: Vec<AudioSeg>,
+    duration_seconds: u32,
+}
+
+/// Cut an existing video's sound into 16 kHz mono WAV pieces of 5 minutes (what the transcript
+/// pipeline expects for uploads) and report its duration.
+#[tauri::command]
+pub fn extract_audio_segments(app: tauri::AppHandle, path: String) -> Result<Extracted, String> {
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("uploads").join(uuid());
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let out = hidden(Command::new(ffmpeg()))
+        .args(["-hide_banner", "-y", "-i", &path, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", "-f", "segment", "-segment_time", "300", "-reset_timestamps", "1"])
+        .arg(dir.join("s%d.wav"))
+        .output()
+        .map_err(|e| format!("ffmpeg: {e}"))?;
+    let log = String::from_utf8_lossy(&out.stderr);
+    // Duration is printed as "Duration: HH:MM:SS.xx" in the input description.
+    let dur = log
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Duration: "))
+        .and_then(|d| d.split(',').next())
+        .map(|d| d.split(':').map(|x| x.parse::<f64>().unwrap_or(0.0)).fold(0.0, |a, x| a * 60.0 + x))
+        .unwrap_or(0.0);
+    let mut segments = vec![];
+    for n in 0.. {
+        let p = dir.join(format!("s{n}.wav")); // segment muxer numbers from 0
+        if !p.exists() {
+            break;
+        }
+        segments.push(AudioSeg { path: p.to_string_lossy().into(), start: n * 300 });
+    }
+    if segments.is_empty() {
+        return Err("This video has no sound we can use.".into());
+    }
+    Ok(Extracted { segments, duration_seconds: dur.round() as u32 })
+}

@@ -1,3 +1,4 @@
+mod auth;
 mod recorder;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -9,6 +10,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(recorder::Recorder::default())
         .invoke_handler(tauri::generate_handler![
+            auth::start_auth_listener,
             recorder::list_devices,
             recorder::start_recording,
             recorder::pause_recording,
@@ -19,6 +21,7 @@ pub fn run() {
             recorder::screenshot,
             recorder::upload_file,
             recorder::file_size,
+            recorder::extract_audio_segments,
             recorder::open_controls,
             recorder::set_controls_height,
             recorder::open_overlay,

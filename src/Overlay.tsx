@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import type { Tool } from "./Controls";
 
 interface Shape { tool: Tool; color: string; pts: [number, number][] }
@@ -35,7 +35,7 @@ export default function Overlay() {
     <canvas ref={ref} style={{ position: "fixed", inset: 0, width: "100vw", height: "100vh", cursor: "crosshair", touchAction: "none" }}
       onPointerDown={(e) => { (e.target as Element).setPointerCapture(e.pointerId); cur.current = { ...tool.current, pts: [pt(e)] }; }}
       onPointerMove={(e) => { if (!cur.current) return; const s = cur.current; if (s.tool === "pen" || s.tool === "highlight") s.pts.push(pt(e)); else s.pts[1] = pt(e); draw(); }}
-      onPointerUp={() => { if (cur.current && cur.current.pts.length > 1) shapes.current.push(cur.current); cur.current = null; draw(); }} />
+      onPointerUp={() => { if (cur.current && cur.current.pts.length > 1) { shapes.current.push(cur.current); emit("stroke-done"); } cur.current = null; draw(); }} />
   );
 }
 

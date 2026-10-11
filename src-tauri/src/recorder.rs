@@ -106,6 +106,7 @@ struct Session {
     dir: PathBuf,
     screen: String,
     mic: Option<String>,
+    audio_only: bool,
     height: u32,
     fps: u32,
     seg: u32,
@@ -131,8 +132,9 @@ struct Cur {
     audio: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct Part {
+    n: u32,
     path: String,
     audio_path: String,
     start_seconds: u32,
@@ -153,6 +155,27 @@ pub struct State_ {
     muted: bool,
 }
 
+fn main_file(dir: &std::path::Path, n: u32, audio_only: bool) -> PathBuf {
+    dir.join(if audio_only { format!("p{n}.voice.webm") } else { format!("p{n}.mp4") })
+}
+
+fn make_part(dir: &std::path::Path, n: u32, audio_only: bool, with_audio: bool, start: f64, dur: f64) -> Option<Part> {
+    let path = main_file(dir, n, audio_only);
+    let meta = std::fs::metadata(&path).ok()?;
+    if dur < 1.0 {
+        return None; // too short to be playable
+    }
+    let side = dir.join(format!("p{n}.audio.webm"));
+    let audio_path = if audio_only {
+        path.to_string_lossy().into()
+    } else if with_audio && side.exists() {
+        side.to_string_lossy().into()
+    } else {
+        String::new()
+    };
+    Some(Part { n, path: path.to_string_lossy().into(), audio_path, start_seconds: start.round() as u32, duration_seconds: dur.round() as u32, size_bytes: meta.len() })
+}
+
 impl Session {
     fn elapsed(&self) -> f64 {
         self.clock + self.cur.as_ref().map_or(0.0, |c| c.started.elapsed().as_secs_f64())
@@ -164,8 +187,25 @@ impl Session {
         let (height, fps) = (self.height, self.fps);
         let b = bitrate(height, fps);
         let mic = if audio { self.mic.clone() } else { None };
+        let n = self.next_part.to_string();
         let mut cmd = hidden(Command::new(ffmpeg()));
         cmd.args(["-hide_banner", "-loglevel", "error", "-y"]);
+        if self.audio_only {
+            // Voice only: one Opus file per part serves as both the "video" file and the transcript audio.
+            let m = self.mic.clone().ok_or("Choose a microphone for a voice-only recording")?;
+            #[cfg(target_os = "macos")]
+            cmd.args(["-f", "avfoundation", "-i", &format!(":{m}")]);
+            #[cfg(windows)]
+            cmd.args(["-use_wallclock_as_timestamps", "1", "-f", "dshow", "-i", &format!("audio={m}")]);
+            if self.muted {
+                cmd.args(["-af", "volume=0"]);
+            }
+            cmd.args(["-vn", "-c:a", "libopus", "-b:a", "32k", "-f", "segment", "-segment_time", &seg, "-segment_format", "webm", "-reset_timestamps", "1", "-segment_start_number", &n])
+                .arg(self.dir.join("p%d.voice.webm"));
+            let child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
+            self.cur = Some(Cur { child, started: Instant::now(), first_part: self.next_part, audio: true });
+            return Ok(());
+        }
         let (audio_in, vf, venc): (usize, String, Vec<String>);
         #[cfg(target_os = "macos")]
         {
@@ -186,13 +226,13 @@ impl Session {
             vf = format!("hwdownload,format=bgra,scale=-2:{height}");
             venc = ["-c:v", "h264_mf"].map(String::from).to_vec(); // ponytail: MF picks the MFT; prefer nvenc/qsv/amf when present
         }
-        let n = self.next_part.to_string();
         cmd.args(["-map", "0:v", "-vf", &vf]).args(&venc);
         cmd.args(["-b:v", &b.to_string(), "-pix_fmt", "yuv420p", "-g", &(fps * 2).to_string(), "-force_key_frames", &format!("expr:gte(t,n_forced*{seg})")]);
         if mic.is_some() {
             cmd.args(["-map", &format!("{audio_in}:a"), "-c:a", "aac", "-b:a", "64k"]);
         }
-        cmd.args(["-f", "segment", "-segment_time", &seg, "-segment_format", "mp4", "-reset_timestamps", "1", "-segment_start_number", &n])
+        // Fragmented MP4: a part cut short by a crash is still playable.
+        cmd.args(["-f", "segment", "-segment_time", &seg, "-segment_format", "mp4", "-segment_format_options", "movflags=frag_keyframe+empty_moov+default_base_moof", "-reset_timestamps", "1", "-segment_start_number", &n])
             .arg(self.dir.join("p%d.mp4"));
         if mic.is_some() {
             cmd.args(["-map", &format!("{audio_in}:a"), "-vn", "-c:a", "libopus", "-b:a", "32k", "-f", "segment", "-segment_time", &seg, "-segment_format", "webm", "-reset_timestamps", "1", "-segment_start_number", &n])
@@ -207,16 +247,42 @@ impl Session {
         let Some(mut c) = self.cur.take() else { return };
         let len = c.started.elapsed().as_secs_f64();
         if let Some(stdin) = c.child.stdin.as_mut() {
-            let _ = stdin.write_all(b"q"); // graceful: lets ffmpeg finalize the MP4 moov atom
+            let _ = stdin.write_all(b"q"); // graceful: lets ffmpeg finalize the files
         }
         let _ = c.child.wait();
         let mut n = c.first_part;
-        while self.dir.join(format!("p{n}.mp4")).exists() {
+        while main_file(&self.dir, n, self.audio_only).exists() {
             n += 1;
         }
         self.runs.push(Run { first_part: c.first_part, start: self.clock, len, audio: c.audio });
         self.clock += len;
         self.next_part = n.max(c.first_part + 1);
+    }
+
+    /// Parts that will not change any more: every part of finished runs, and all but the newest of the current run.
+    fn parts(&self, include_current: bool) -> Vec<Part> {
+        let seg = self.seg as f64;
+        let mut out = vec![];
+        for r in &self.runs {
+            for k in 0.. {
+                let n = r.first_part + k;
+                if !main_file(&self.dir, n, self.audio_only).exists() {
+                    break;
+                }
+                let dur = (r.len - k as f64 * seg).min(seg);
+                out.extend(make_part(&self.dir, n, self.audio_only, r.audio, r.start + k as f64 * seg, dur));
+            }
+        }
+        if let (true, Some(c)) = (include_current, &self.cur) {
+            let mut n = c.first_part;
+            while main_file(&self.dir, n + 1, self.audio_only).exists() {
+                let k = (n - c.first_part) as f64;
+                out.extend(make_part(&self.dir, n, self.audio_only, c.audio, self.clock + k * seg, seg));
+                n += 1;
+            }
+        }
+        out.truncate(50); // server limit
+        out
     }
 }
 
@@ -226,6 +292,7 @@ pub fn start_recording(
     state: State<Recorder>,
     screen: String,
     mic: Option<String>,
+    audio_only: bool,
     height: u32,
     fps: u32,
     chunk_seconds: u32,
@@ -236,7 +303,7 @@ pub fn start_recording(
     }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("recordings").join(uuid());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let mut s = Session { dir: dir.clone(), screen, mic, height, fps, seg: chunk_seconds.max(120), muted: false, paused: false, next_part: 1, clock: 0.0, runs: vec![], cur: None };
+    let mut s = Session { dir: dir.clone(), screen, mic, audio_only, height, fps, seg: chunk_seconds.max(120), muted: false, paused: false, next_part: 1, clock: 0.0, runs: vec![], cur: None };
     s.begin_run()?;
     *slot = Some(s);
     Ok(dir.to_string_lossy().into())
@@ -289,37 +356,110 @@ pub fn recording_state(state: State<Recorder>) -> Result<State_, String> {
     with(&state, |s| Ok(State_ { elapsed: s.elapsed(), paused: s.paused, muted: s.muted }))
 }
 
+/// Parts that are final while recording continues (for background upload).
+#[tauri::command]
+pub fn completed_parts(state: State<Recorder>) -> Result<Vec<Part>, String> {
+    with(&state, |s| Ok(s.parts(true)))
+}
+
 #[tauri::command]
 pub fn stop_recording(state: State<Recorder>) -> Result<Finished, String> {
     let mut s = state.0.lock().unwrap().take().ok_or("Not recording")?;
     s.end_run();
-    let seg = s.seg as f64;
+    let parts = s.parts(false);
+    if parts.is_empty() {
+        return Err("Nothing was recorded. Check Screen Recording and Microphone permission for ScreenLoop.".into());
+    }
+    Ok(Finished { parts, duration_seconds: s.clock.round() as u32 })
+}
+
+// ---- Crash recovery: manifests + rebuilding parts from files on disk ----
+
+fn sessions_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("recordings"))
+}
+
+/// Only paths inside our recordings folder are ever touched.
+fn session_dir(app: &tauri::AppHandle, dir: &str) -> Result<PathBuf, String> {
+    let root = sessions_dir(app)?;
+    let p = PathBuf::from(dir);
+    if p.parent() != Some(root.as_path()) {
+        return Err("Not a recording folder".into());
+    }
+    Ok(p)
+}
+
+#[tauri::command]
+pub fn save_manifest(app: tauri::AppHandle, dir: String, json: String) -> Result<(), String> {
+    std::fs::write(session_dir(&app, &dir)?.join("session.json"), json).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+pub struct Unsent {
+    dir: String,
+    manifest: String,
+}
+
+/// Recording folders that have a manifest but were never sent (newest first).
+#[tauri::command]
+pub fn list_unsent(app: tauri::AppHandle, state: State<Recorder>) -> Result<Vec<Unsent>, String> {
+    let live = state.0.lock().unwrap().as_ref().map(|s| s.dir.clone());
+    let mut out = vec![];
+    let Ok(rd) = std::fs::read_dir(sessions_dir(&app)?) else { return Ok(out) };
+    for e in rd.flatten() {
+        let p = e.path();
+        if Some(&p) == live.as_ref() {
+            continue;
+        }
+        if let Ok(m) = std::fs::read_to_string(p.join("session.json")) {
+            out.push(Unsent { dir: p.to_string_lossy().into(), manifest: m });
+        }
+    }
+    out.sort_by(|a, b| b.dir.cmp(&a.dir));
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn delete_session(app: tauri::AppHandle, dir: String) -> Result<(), String> {
+    let p = session_dir(&app, &dir)?;
+    std::fs::remove_dir_all(p).map_err(|e| e.to_string())
+}
+
+fn probe_secs(path: &std::path::Path) -> f64 {
+    let Ok(out) = hidden(Command::new(ffmpeg())).args(["-hide_banner", "-i"]).arg(path).output() else { return 0.0 };
+    String::from_utf8_lossy(&out.stderr)
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Duration: "))
+        .and_then(|d| d.split(',').next())
+        .map(|d| d.split(':').map(|x| x.parse::<f64>().unwrap_or(0.0)).fold(0.0, |a, x| a * 60.0 + x))
+        .unwrap_or(0.0)
+}
+
+/// Rebuild the part list of an interrupted recording from the files that survived.
+#[tauri::command]
+pub fn recover_parts(app: tauri::AppHandle, dir: String, audio_only: bool) -> Result<Finished, String> {
+    let p = session_dir(&app, &dir)?;
     let mut parts = vec![];
-    for r in &s.runs {
-        for k in 0.. {
-            let n = r.first_part + k;
-            let path = s.dir.join(format!("p{n}.mp4"));
-            let Ok(meta) = std::fs::metadata(&path) else { break };
-            let start = r.start + k as f64 * seg;
-            let dur = (r.len - k as f64 * seg).min(seg);
-            if dur < 1.0 {
-                continue; // too short to be playable
+    let mut clock = 0.0;
+    for n in 1..=999u32 {
+        let f = main_file(&p, n, audio_only);
+        if !f.exists() {
+            if n > 1 && !main_file(&p, n + 1, audio_only).exists() {
+                break;
             }
-            let audio = s.dir.join(format!("p{n}.audio.webm"));
-            parts.push(Part {
-                path: path.to_string_lossy().into(),
-                audio_path: if r.audio && audio.exists() { audio.to_string_lossy().into() } else { String::new() },
-                start_seconds: start.round() as u32,
-                duration_seconds: dur.round() as u32,
-                size_bytes: meta.len(),
-            });
+            continue;
+        }
+        let dur = probe_secs(&f);
+        if let Some(part) = make_part(&p, n, audio_only, true, clock, dur) {
+            clock += dur;
+            parts.push(part);
         }
     }
     if parts.is_empty() {
-        return Err("Nothing was recorded. Check Screen Recording permission for ScreenLoop.".into());
+        return Err("Nothing could be recovered from this recording.".into());
     }
-    parts.truncate(50); // server limit
-    Ok(Finished { parts, duration_seconds: s.clock.round() as u32 })
+    parts.truncate(50);
+    Ok(Finished { parts, duration_seconds: clock.round() as u32 })
 }
 
 /// Grab a JPEG of one monitor (includes any drawn markup; excludes our protected control windows).

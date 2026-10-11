@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { check } from "@tauri-apps/plugin-updater";
 import { relaunch } from "@tauri-apps/plugin-process";
@@ -7,10 +7,12 @@ import { api, tokenFromInput, type ResolvedLink } from "./lib/api";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import Recorder from "./Recorder";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import Recorder, { type Manifest } from "./Recorder";
 import UploadVideo from "./UploadVideo";
 
-type Rec = { token: string; link: ResolvedLink };
+type Rec = { token: string; link: ResolvedLink; resume?: { dir: string; manifest: Manifest } };
+interface Unsent { dir: string; manifest: string }
 interface Recent { id: string; title: string; created_at: string; duration_seconds: number; transcript_status: string | null }
 
 const Icon = ({ d }: { d: string }) => (
@@ -77,6 +79,19 @@ function Home({ session, onOpen, onUpload }: { session: Session | null; onOpen: 
   const [input, setInput] = useState("");
   const [err, setErr] = useState("");
   const [recent, setRecent] = useState<Recent[]>([]);
+  const [unsent, setUnsent] = useState<{ dir: string; m: Manifest }[]>([]);
+  useEffect(() => {
+    invoke<Unsent[]>("list_unsent").then((l) => setUnsent(l.flatMap((u) => { try { return [{ dir: u.dir, m: JSON.parse(u.manifest) as Manifest }]; } catch { return []; } }))).catch(() => {});
+  }, []);
+  const resumeOne = async (u: { dir: string; m: Manifest }) => {
+    setErr("");
+    try {
+      const link = await api<ResolvedLink>("resolve-link", { token: u.m.token });
+      if (link.state !== "ok") return setErr(`The link for this recording is ${link.state}, so it can no longer be sent.`);
+      onOpen({ token: u.m.token, link, resume: { dir: u.dir, manifest: u.m } });
+    } catch (e) { setErr((e as Error).message); }
+  };
+  const discardOne = async (u: { dir: string }) => { await invoke("delete_session", { dir: u.dir }).catch(() => {}); setUnsent((l) => l.filter((x) => x.dir !== u.dir)); };
   useEffect(() => {
     if (session) api<Recent[]>("my-recordings").then((r) => setRecent(r.slice(0, 3))).catch(() => {});
   }, [session]);
@@ -118,6 +133,19 @@ function Home({ session, onOpen, onUpload }: { session: Session | null; onOpen: 
         <button className="btn">Join</button>
       </form>
       {err && <p className="err">{err}</p>}
+      {unsent.length > 0 && (
+        <div className="list">
+          <div className="eyebrow">Unsent recordings</div>
+          {unsent.map((u) => (
+            <div className="row" key={u.dir}>
+              <div className="thumb" />
+              <div className="meta"><b>{u.m.link.title}</b><span className="muted">Interrupted · {new Date(u.m.savedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })}</span></div>
+              <button className="btn" style={{ height: 34, fontSize: 13 }} onClick={() => resumeOne(u)}>Review and send</button>
+              <button className="linkbtn" onClick={() => discardOne(u)}>Discard</button>
+            </div>
+          ))}
+        </div>
+      )}
       {session && recent.length > 0 && (
         <div className="list">
           <div className="eyebrow">Recent</div>
@@ -145,9 +173,25 @@ export default function App() {
     const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
     return () => data.subscription.unsubscribe();
   }, []);
+  // screenloop://r/<token> (from a browser or a link in an email) opens that recording.
+  const openRef = useRef<(raw: string) => void>(() => {});
+  openRef.current = async (raw: string) => {
+    if (rec) return; // already in the middle of something
+    const token = tokenFromInput(raw.replace(/^screenloop:\/\//, ""));
+    if (!token) return;
+    try {
+      const link = await api<ResolvedLink>("resolve-link", { token });
+      if (link.state === "ok") { setUpload(false); setRec({ token, link }); }
+    } catch { /* ignore a bad link */ }
+  };
+  useEffect(() => {
+    getCurrent().then((urls) => urls?.forEach((u) => openRef.current(u))).catch(() => {});
+    const un = onOpenUrl((urls) => urls.forEach((u) => openRef.current(u)));
+    return () => { un.then((f) => f()); };
+  }, []);
   if (!ready) return null;
   if (upload) return <div className="app"><div className="topbar"><div className="brand"><div className="logo"><i /></div>ScreenLoop</div></div><UploadVideo onDone={() => setUpload(false)} /></div>;
-  if (rec) return <div className="app"><Recorder token={rec.token} link={rec.link} onDone={() => setRec(null)} /></div>;
+  if (rec) return <div className="app"><Recorder key={rec.resume?.dir ?? rec.token} token={rec.token} link={rec.link} resume={rec.resume} onDone={() => setRec(null)} /></div>;
   return (
     <div className="app">
       <div className="topbar">

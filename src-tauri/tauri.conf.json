@@ -53,6 +53,13 @@
       "endpoints": [
         "https://github.com/Dimagithub/screenloop-desktop/releases/latest/download/latest.json"
       ]
+    },
+    "deep-link": {
+      "desktop": {
+        "schemes": [
+          "screenloop"
+        ]
+      }
     }
   }
 }

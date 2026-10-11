@@ -99,3 +99,5 @@ textarea.input { height: 90px; padding: 10px 12px; resize: none; }
 .rng::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 8px; height: 26px; border-radius: 4px; background: var(--lime); cursor: ew-resize; border: 0; }
 .rng::-moz-range-thumb { pointer-events: auto; width: 8px; height: 26px; border-radius: 4px; background: var(--lime); border: 0; }
 .rng::-webkit-slider-runnable-track { background: transparent; } 
+.ctl .warn { margin-left: 8px; font: 700 11px "DM Sans", sans-serif; color: var(--amber); }
+.count { font: 700 120px "Space Grotesk", sans-serif; color: var(--lime); line-height: 1; }

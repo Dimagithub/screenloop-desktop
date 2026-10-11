@@ -8,15 +8,22 @@ import { SESSION_KEY } from "./Controls";
 import { fmt, locate, type PartInfo } from "./lib/timeline";
 
 interface Device { index: string; name: string }
-interface Finished { parts: PartInfo[]; duration_seconds: number }
-interface Comment { id: string; at: number; body: string; shot: string | null }
+type RPart = PartInfo & { n: number };
+interface Finished { parts: RPart[]; duration_seconds: number }
+export interface Comment { id: string; at: number; body: string; shot: string | null }
 interface Attachment { path: string; name: string; type: string; size: number }
+interface Sent { path: string; audioPath: string | null }
 type Upload = { path: string; signedUrl: string; audioPath: string; audioSignedUrl: string };
-type Quality = "low" | "moderate" | "high";
+export type Quality = "low" | "moderate" | "high";
+export interface Manifest { v: 1; token: string; link: ResolvedLink; quality: Quality; voiceOnly: boolean; screen: string; comments: Comment[]; uploaded: Record<number, Sent>; notes: string; savedAt: string }
 
 const QUALITY: Record<Quality, [number, number]> = { low: [540, 8], moderate: [720, 10], high: [1440, 15] }; // same presets as web
 const LABEL: Record<Quality, string> = { low: "Save data", moderate: "Standard", high: "Sharp" };
 const MIME: Record<string, string> = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+async function retry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
+  for (let i = 0; ; i++) { try { return await fn(); } catch (e) { if (i >= tries - 1) throw e; await sleep(1000 * 2 ** i); } }
+}
 
 /** Live level meter for the chosen microphone (webview audio, only used on the get-ready screen). */
 function useMeter(label: string, on: boolean) {
@@ -41,43 +48,92 @@ function useMeter(label: string, on: boolean) {
   return level;
 }
 
-export default function Recorder({ token, link, onDone }: { token: string; link: ResolvedLink; onDone: () => void }) {
+export default function Recorder({ token, link, onDone, resume }: { token: string; link: ResolvedLink; onDone: () => void; resume?: { dir: string; manifest: Manifest } }) {
   const [screens, setScreens] = useState<Device[]>([]);
   const [mics, setMics] = useState<Device[]>([]);
-  const [screen, setScreen] = useState("");
+  const [screen, setScreen] = useState(resume?.manifest.screen ?? "");
   const [mic, setMic] = useState("");
-  const [quality, setQuality] = useState<Quality>((link.quality as Quality) ?? "moderate");
-  const [stage, setStage] = useState<"setup" | "recording" | "review" | "sending" | "sent">("setup");
+  const [quality, setQuality] = useState<Quality>(resume?.manifest.quality ?? (link.quality as Quality) ?? "moderate");
+  const [voiceOnly, setVoiceOnly] = useState(resume?.manifest.voiceOnly ?? false);
+  const [stage, setStage] = useState<"setup" | "countdown" | "recording" | "review" | "sending" | "sent">(resume ? "review" : "setup");
+  const [count, setCount] = useState(3);
   const [done, setDone] = useState<Finished | null>(null);
-  const [comments, setComments] = useState<Comment[]>([]);
+  const [comments, setComments] = useState<Comment[]>(resume?.manifest.comments ?? []);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [trim, setTrim] = useState<[number, number]>([0, 0]);
-  const [notes, setNotes] = useState("");
+  const [notes, setNotes] = useState(resume?.manifest.notes ?? "");
   const [msg, setMsg] = useState("");
   const [previewImg, setPreviewImg] = useState("");
-  const chunk = Math.max(2, link.chunkMinutes ?? 30) * 60;
+  const [upl, setUpl] = useState(0); // parts uploaded
+  const dirRef = useRef(resume?.dir ?? "");
+  const uploaded = useRef<Record<number, Sent>>(resume?.manifest.uploaded ?? {});
+  const inflight = useRef(new Set<number>());
   const stopping = useRef(false);
+  const chunk = Math.max(2, link.chunkMinutes ?? 30) * 60;
   const micName = mics.find((m) => m.index === mic)?.name ?? "";
   const level = useMeter(micName, stage === "setup" && !!mic);
+  const noMedia = stage === "review" && !done;
+
+  // Everything needed to finish sending after a crash or quit.
+  const persist = (over: Partial<Manifest> = {}) => {
+    if (!dirRef.current) return;
+    const m: Manifest = { v: 1, token, link, quality, voiceOnly, screen, comments, uploaded: uploaded.current, notes, savedAt: new Date().toISOString(), ...over };
+    invoke("save_manifest", { dir: dirRef.current, json: JSON.stringify(m) }).catch(() => {});
+  };
+  useEffect(() => { if (stage === "recording" || stage === "review") persist(); }, [comments, notes, upl, stage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     invoke<{ screens: Device[]; mics: Device[] }>("list_devices")
-      .then((d) => { setScreens(d.screens); setMics(d.mics); setScreen(d.screens[0]?.index ?? ""); setMic(d.mics[0]?.index ?? ""); })
+      .then((d) => { setScreens(d.screens); setMics(d.mics); setScreen((s) => s || d.screens[0]?.index || ""); setMic(d.mics[0]?.index ?? ""); })
       .catch((e) => setMsg(String(e)));
   }, []);
 
+  // Interrupted recording: rebuild the parts from the files that survived.
+  useEffect(() => {
+    if (!resume) return;
+    invoke<Finished>("recover_parts", { dir: resume.dir, audioOnly: resume.manifest.voiceOnly })
+      .then((res) => { setDone(res); setTrim([0, res.duration_seconds]); })
+      .catch((e) => { setMsg(String(e)); });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Live-ish preview of the chosen screen.
   useEffect(() => {
-    if (stage !== "setup" || !screen) return;
+    if (stage !== "setup" || !screen || voiceOnly) return;
     let gone = false;
     invoke<string>("screenshot", { screen }).then((p) => { if (!gone) setPreviewImg(convertFileSrc(p)); }).catch(() => setPreviewImg(""));
     return () => { gone = true; };
-  }, [screen, stage]);
+  }, [screen, stage, voiceOnly]);
 
   useEffect(() => {
-    const un = listen<Comment & { shot: string | null }>("comment-added", (e) => setComments((c) => [...c, e.payload]));
+    const un = listen<Comment>("comment-added", (e) => setComments((c) => [...c, e.payload]));
     return () => { un.then((f) => f()); };
   }, []);
+
+  // ---- uploads (parts go up while you keep recording) ----
+  const uploadPart = async (p: RPart): Promise<Sent> => {
+    const have = uploaded.current[p.n];
+    if (have) return have;
+    const u = await retry(() => api<Upload>("create-upload", { token, ext: voiceOnly ? "voice" : "mp4", part: p.n - 1 }));
+    await retry(() => invoke("upload_file", { path: p.path, url: u.signedUrl, contentType: voiceOnly ? "audio/webm" : "video/mp4" }));
+    let audioPath: string | null = null;
+    if (voiceOnly) audioPath = u.path;
+    else if (p.audio_path) { await retry(() => invoke("upload_file", { path: p.audio_path, url: u.audioSignedUrl, contentType: "audio/webm" })); audioPath = u.audioPath; }
+    const r = { path: u.path, audioPath };
+    uploaded.current[p.n] = r; setUpl(Object.keys(uploaded.current).length);
+    return r;
+  };
+  useEffect(() => {
+    if (stage !== "recording") return;
+    let busy = false;
+    const t = setInterval(async () => {
+      if (busy) return; busy = true;
+      try {
+        const ready = await invoke<RPart[]>("completed_parts");
+        for (const p of ready) if (!uploaded.current[p.n] && !inflight.current.has(p.n)) { inflight.current.add(p.n); try { await uploadPart(p); } catch { /* retried at send */ } finally { inflight.current.delete(p.n); } }
+      } catch { /* not recording */ } finally { busy = false; }
+    }, 4000);
+    return () => clearInterval(t);
+  }, [stage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const finish = async () => {
     if (stopping.current) return;
@@ -99,16 +155,25 @@ export default function Recorder({ token, link, onDone }: { token: string; link:
     return () => { un.then((f) => f()); };
   }, [stage]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const start = async () => {
-    setMsg(""); setComments([]);
+  // 3-2-1 before the capture starts.
+  useEffect(() => {
+    if (stage !== "countdown") return;
+    if (count <= 0) { begin(); return; }
+    const t = setTimeout(() => setCount((c) => c - 1), 1000);
+    return () => clearTimeout(t);
+  }, [stage, count]); // eslint-disable-line react-hooks/exhaustive-deps
+  const startCountdown = () => { setMsg(""); setComments([]); uploaded.current = {}; setUpl(0); setCount(3); setStage("countdown"); };
+
+  const begin = async () => {
     const [h, fps] = QUALITY[quality];
     try {
-      localStorage.setItem(SESSION_KEY, JSON.stringify({ prompts: link.prompts ?? [], screen, hasMic: !!mic }));
-      await invoke("start_recording", { screen, mic: mic || null, height: h, fps, chunkSeconds: chunk });
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ prompts: link.prompts ?? [], screen, hasMic: !!mic, voiceOnly, maxSeconds: (link.maxDurationMin ?? 0) * 60 }));
+      dirRef.current = await invoke<string>("start_recording", { screen, mic: mic || null, audioOnly: voiceOnly, height: h, fps, chunkSeconds: chunk });
+      persist();
       await invoke("open_controls");
       setStage("recording");
       await getCurrentWindow().minimize(); // get out of the way; the floating bar takes over
-    } catch (e) { setMsg(String(e)); }
+    } catch (e) { setMsg(String(e)); setStage("setup"); }
   };
 
   const addFiles = async () => {
@@ -125,48 +190,52 @@ export default function Recorder({ token, link, onDone }: { token: string; link:
   };
 
   const send = async () => {
-    if (!done) return;
+    if (!done && !notes.trim() && !attachments.length && !comments.length) { setMsg("Add a note, a comment or an attachment first."); return; }
     setStage("sending");
     try {
-      const parts = [];
-      for (const [i, p] of done.parts.entries()) {
-        setMsg(`Uploading part ${i + 1} of ${done.parts.length}…`);
-        const u = await api<Upload>("create-upload", { token, ext: "mp4", part: i });
-        await invoke("upload_file", { path: p.path, url: u.signedUrl, contentType: "video/mp4" });
-        if (p.audio_path) await invoke("upload_file", { path: p.audio_path, url: u.audioSignedUrl, contentType: "audio/webm" });
-        parts.push({ path: u.path, audioPath: p.audio_path ? u.audioPath : null, startSeconds: p.start_seconds, durationSeconds: p.duration_seconds, sizeBytes: p.size_bytes });
+      const parts: { path: string; audioPath: string | null; startSeconds: number; durationSeconds: number; sizeBytes: number }[] = [];
+      for (const [i, p] of (done?.parts ?? []).entries()) {
+        setMsg(`Uploading part ${i + 1} of ${done!.parts.length}…`);
+        const r = await uploadPart(p);
+        parts.push({ path: r.path, audioPath: r.audioPath, startSeconds: p.start_seconds, durationSeconds: p.duration_seconds, sizeBytes: p.size_bytes });
       }
-      const kept = comments.filter((c) => c.at >= trim[0] && c.at <= trim[1]);
-      let commentOut: { atSeconds: number; body: string; screenshotPath: string | null }[] = kept.map((c) => ({ atSeconds: c.at, body: c.body, screenshotPath: null }));
+      const kept = done ? comments.filter((c) => c.at >= trim[0] && c.at <= trim[1]) : comments.map((c) => ({ ...c, at: 0 }));
+      const commentOut: { atSeconds: number; body: string; screenshotPath: string | null }[] = kept.map((c) => ({ atSeconds: c.at, body: c.body, screenshotPath: null }));
       const withShots = kept.filter((c) => c.shot);
       if (withShots.length) {
         setMsg("Uploading comment screenshots…");
-        const slots = await api<{ id: string; path: string; signedUrl: string }[]>("comment-uploads", { token, ids: withShots.map((c) => c.id) });
+        const slots = await retry(() => api<{ id: string; path: string; signedUrl: string }[]>("comment-uploads", { token, ids: withShots.map((c) => c.id) }));
         for (const s of slots) {
           const c = kept.find((k) => k.id === s.id)!;
-          await invoke("upload_file", { path: c.shot, url: s.signedUrl, contentType: "image/jpeg" });
+          await retry(() => invoke("upload_file", { path: c.shot, url: s.signedUrl, contentType: "image/jpeg" }));
           commentOut[kept.indexOf(c)]!.screenshotPath = s.path;
         }
       }
-      let attOut: { path: string; name: string; type: string; size: number }[] = [];
+      const attOut: { path: string; name: string; type: string; size: number }[] = [];
       if (attachments.length) {
         setMsg("Uploading attachments…");
-        const slots = await api<{ path: string; signedUrl: string }[]>("attachment-uploads", { token, files: attachments.map((a) => ({ type: a.type, size: a.size })) });
+        const slots = await retry(() => api<{ path: string; signedUrl: string }[]>("attachment-uploads", { token, files: attachments.map((a) => ({ type: a.type, size: a.size })) }));
         for (const [i, s] of slots.entries()) {
           const a = attachments[i]!;
-          await invoke("upload_file", { path: a.path, url: s.signedUrl, contentType: a.type });
+          await retry(() => invoke("upload_file", { path: a.path, url: s.signedUrl, contentType: a.type }));
           attOut.push({ path: s.path, name: a.name, type: a.type, size: a.size });
         }
       }
       setMsg("Finishing…");
       await api("finalize", {
-        token, path: parts[0]!.path, audioPath: parts[0]!.audioPath, parts, notes, origin: import.meta.env.VITE_WEB_URL,
-        durationSeconds: done.duration_seconds, sizeBytes: parts.reduce((a, p) => a + p.sizeBytes, 0),
+        token, path: parts[0]?.path ?? "", audioPath: parts[0]?.audioPath ?? null, parts, notes, origin: import.meta.env.VITE_WEB_URL,
+        durationSeconds: done?.duration_seconds ?? 0, sizeBytes: parts.reduce((a, p) => a + p.sizeBytes, 0),
         trimStartSeconds: Math.round(trim[0]), trimEndSeconds: Math.round(trim[1]), quality, source: "recorded",
         comments: commentOut, attachments: attOut,
       });
+      if (dirRef.current) await invoke("delete_session", { dir: dirRef.current }).catch(() => {});
       setMsg(""); setStage("sent");
     } catch (e) { setMsg(String(e)); setStage("review"); }
+  };
+
+  const discard = async () => {
+    if (dirRef.current) await invoke("delete_session", { dir: dirRef.current }).catch(() => {});
+    onDone();
   };
 
   const title = (
@@ -175,24 +244,28 @@ export default function Recorder({ token, link, onDone }: { token: string; link:
       {done && stage === "review" && <span className="chip">Recorded {fmt(done.duration_seconds)} · {comments.length} comment{comments.length === 1 ? "" : "s"}</span>}
     </div>
   );
+  const centered = (c: React.ReactNode) => <>{title}<div className="page" style={{ justifyContent: "center" }}><div className="sendbox">{c}</div></div></>;
 
-  if (stage === "sent") return (<>{title}<div className="page" style={{ justifyContent: "center" }}><div className="sendbox"><h1>Sent</h1><p className="muted">Thank you. Your recording is being turned into a document.</p><button className="btn lime" onClick={onDone}>Done</button></div></div></>);
-  if (stage === "sending") return (<>{title}<div className="page" style={{ justifyContent: "center" }}><div className="sendbox"><h1>Sending…</h1><p className="muted">{msg || "Working…"}</p></div></div></>);
-  if (stage === "recording") return (<>{title}<div className="page" style={{ justifyContent: "center" }}><div className="sendbox"><h1>Recording</h1><p className="muted">Use the floating bar to pause, draw, comment or stop. It is never part of your recording.</p><button className="btn danger" onClick={finish}>Stop recording</button></div></div></>);
+  if (stage === "sent") return centered(<><h1>Sent</h1><p className="muted">Thank you. Your recording is being turned into a document.</p><button className="btn lime" onClick={onDone}>Done</button></>);
+  if (stage === "sending") return centered(<><h1>Sending…</h1><p className="muted">{msg || "Working…"}</p></>);
+  if (stage === "countdown") return centered(<><div className="count" aria-live="assertive">{count || "●"}</div><p className="muted">Recording starts in {Math.max(count, 0)}…</p><button className="linkbtn" onClick={() => setStage("setup")}>Cancel</button></>);
+  if (stage === "recording") return centered(<><h1>Recording</h1><p className="muted">Use the floating bar to pause, draw, comment or stop. It is never part of your recording.{upl > 0 ? ` ${upl} part${upl > 1 ? "s" : ""} already uploaded.` : ""}</p><button className="btn danger" onClick={finish}>Stop recording</button></>);
 
-  if (stage === "review" && done) return (
+  if (stage === "review") return (
     <>{title}
       <div className="setup">
         <div className="left">
-          <Player parts={done.parts} duration={done.duration_seconds} trim={trim} setTrim={setTrim} comments={comments} />
+          {done ? <Player parts={done.parts} duration={done.duration_seconds} trim={trim} setTrim={setTrim} comments={comments} audioOnly={voiceOnly} />
+            : <div className="preview"><span className="muted">{resume ? "Recovering your recording…" : "No recording. Add notes, comments or files to send."}</span></div>}
         </div>
         <div className="right">
+          {resume && <div className="card muted" style={{ fontSize: 13 }}>This recording was interrupted before it was sent. Review it and send, or discard it.</div>}
           <div className="eyebrow">Your comments</div>
           {comments.length === 0 && <span className="muted">None. Use Comment on the floating bar while recording.</span>}
           {comments.map((c) => (
             <div className="row" key={c.id}>
               {c.shot ? <img className="thumb" style={{ objectFit: "cover" }} src={convertFileSrc(c.shot)} alt="" /> : <div className="thumb" />}
-              <div className="meta"><b style={{ fontSize: 13 }}><span style={{ color: "var(--amber)" }}>{fmt(c.at)}</span> {c.body}</b></div>
+              <div className="meta"><b style={{ fontSize: 13 }}>{done && <span style={{ color: "var(--amber)" }}>{fmt(c.at)} </span>}{c.body}</b></div>
               <button className="linkbtn" aria-label="Remove comment" onClick={() => setComments((l) => l.filter((x) => x.id !== c.id))}>✕</button>
             </div>
           ))}
@@ -203,8 +276,11 @@ export default function Recorder({ token, link, onDone }: { token: string; link:
           </div>
           <div className="spacer" />
           {msg && <p className="err">{msg}</p>}
-          <button className="btn lime big" onClick={send}>Send{link.sender ? ` to ${link.sender.name.split(" ")[0]}` : ""}</button>
-          <div><button className="linkbtn" onClick={() => { setDone(null); setComments([]); setAttachments([]); setStage("setup"); }}>Record again</button></div>
+          <button className="btn lime big" onClick={send} disabled={resume && !done}>Send{link.sender ? ` to ${link.sender.name.split(" ")[0]}` : ""}</button>
+          <div style={{ display: "flex", justifyContent: "space-between" }}>
+            {resume || noMedia ? <button className="linkbtn" onClick={discard}>{resume ? "Discard recording" : "Back"}</button>
+              : <button className="linkbtn" onClick={() => { setDone(null); setComments([]); setAttachments([]); setStage("setup"); }}>Record again</button>}
+          </div>
         </div>
       </div>
     </>
@@ -215,8 +291,9 @@ export default function Recorder({ token, link, onDone }: { token: string; link:
       <div className="setup">
         <div className="left">
           <div className="preview">
-            {previewImg ? <img src={previewImg} alt="Selected screen" style={{ width: "78%", borderRadius: 10, border: "1px solid #3d4541" }} /> : <div className="screen" />}
-            <span className="pill">{screens.find((s) => s.index === screen)?.name ?? "No screen found"}</span>
+            {voiceOnly ? <span className="muted">Voice only: your screen is not recorded.</span>
+              : previewImg ? <img src={previewImg} alt="Selected screen" style={{ width: "78%", borderRadius: 10, border: "1px solid #3d4541" }} /> : <div className="screen" />}
+            {!voiceOnly && <span className="pill">{screens.find((s) => s.index === screen)?.name ?? "No screen found"}</span>}
           </div>
           <div className="card" style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <span aria-hidden>🎙</span>
@@ -226,13 +303,15 @@ export default function Recorder({ token, link, onDone }: { token: string; link:
         </div>
         <div className="right">
           {link.prompts && link.prompts.length > 0 && (<div><div className="eyebrow" style={{ marginBottom: 8 }}>What to cover</div><div className="card prompts">{link.prompts.map((p) => <div key={p}><i />{p}</div>)}</div></div>)}
-          <div className="field"><label htmlFor="scr">Screen</label><select id="scr" className="input" value={screen} onChange={(e) => setScreen(e.target.value)}>{screens.map((d) => <option key={d.index} value={d.index}>{d.name}</option>)}</select></div>
-          <div className="field"><label htmlFor="mic">Microphone</label><select id="mic" className="input" value={mic} onChange={(e) => setMic(e.target.value)}><option value="">No microphone</option>{mics.map((d) => <option key={d.index} value={d.index}>{d.name}</option>)}</select></div>
-          <div className="seg" role="group" aria-label="Quality">{(Object.keys(QUALITY) as Quality[]).map((q) => <button key={q} className={q === quality ? "on" : ""} onClick={() => setQuality(q)}>{LABEL[q]}</button>)}</div>
+          <div className="seg" role="group" aria-label="Mode"><button className={!voiceOnly ? "on" : ""} onClick={() => setVoiceOnly(false)}>Screen and voice</button><button className={voiceOnly ? "on" : ""} onClick={() => setVoiceOnly(true)}>Voice only</button></div>
+          {!voiceOnly && <div className="field"><label htmlFor="scr">Screen</label><select id="scr" className="input" value={screen} onChange={(e) => setScreen(e.target.value)}>{screens.map((d) => <option key={d.index} value={d.index}>{d.name}</option>)}</select></div>}
+          <div className="field"><label htmlFor="mic">Microphone</label><select id="mic" className="input" value={mic} onChange={(e) => setMic(e.target.value)}>{!voiceOnly && <option value="">No microphone</option>}{mics.map((d) => <option key={d.index} value={d.index}>{d.name}</option>)}</select></div>
+          {!voiceOnly && <div className="seg" role="group" aria-label="Quality">{(Object.keys(QUALITY) as Quality[]).map((q) => <button key={q} className={q === quality ? "on" : ""} onClick={() => setQuality(q)}>{LABEL[q]}</button>)}</div>}
           <div className="spacer" />
           {msg && <p className="err">{msg}</p>}
-          <button className="btn lime big" onClick={start} disabled={!screen}><i className="rec-dot" style={{ width: 14, height: 14 }} />Start recording</button>
-          <div className="muted" style={{ textAlign: "center", fontSize: 12 }}>This window hides while you record</div>
+          <button className="btn lime big" onClick={startCountdown} disabled={voiceOnly ? !mic : !screen}><i className="rec-dot" style={{ width: 14, height: 14 }} />Start recording</button>
+          <div style={{ textAlign: "center" }}><button className="linkbtn" onClick={() => { setDone(null); setStage("review"); }}>Send without recording</button></div>
+          <div className="muted" style={{ textAlign: "center", fontSize: 12 }}>{link.maxDurationMin ? `Up to ${link.maxDurationMin} min · ` : ""}This window hides while you record</div>
         </div>
       </div>
     </>
@@ -240,8 +319,8 @@ export default function Recorder({ token, link, onDone }: { token: string; link:
 }
 
 /** Plays the recorded parts back to back, with trim handles and comment markers on one session timeline. */
-function Player({ parts, duration, trim, setTrim, comments }: { parts: PartInfo[]; duration: number; trim: [number, number]; setTrim: (t: [number, number]) => void; comments: Comment[] }) {
-  const vid = useRef<HTMLVideoElement>(null);
+function Player({ parts, duration, trim, setTrim, comments, audioOnly }: { parts: PartInfo[]; duration: number; trim: [number, number]; setTrim: (t: [number, number]) => void; comments: Comment[]; audioOnly: boolean }) {
+  const vid = useRef<HTMLVideoElement & HTMLAudioElement>(null);
   const [idx, setIdx] = useState(0);
   const [t, setT] = useState(0);
   const pending = useRef<number | null>(null);
@@ -255,7 +334,8 @@ function Player({ parts, duration, trim, setTrim, comments }: { parts: PartInfo[
   return (
     <>
       <div className="preview" style={{ overflow: "hidden" }}>
-        <video ref={vid} key={idx} src={convertFileSrc(parts[idx]!.path)} controls style={{ maxWidth: "100%", maxHeight: "100%", borderRadius: 10 }}
+        {audioOnly && <div className="muted" style={{ position: "absolute", top: 16 }}>Voice-only recording</div>}
+        <video ref={vid} key={idx} src={convertFileSrc(parts[idx]!.path)} controls style={audioOnly ? { width: "80%", height: 54 } : { maxWidth: "100%", maxHeight: "100%", borderRadius: 10 }}
           onLoadedMetadata={() => { if (pending.current != null && vid.current) { vid.current.currentTime = pending.current; pending.current = null; } }}
           onTimeUpdate={() => setT(parts[idx]!.start_seconds + (vid.current?.currentTime ?? 0))}
           onEnded={() => { if (idx < parts.length - 1) { pending.current = 0; setIdx(idx + 1); setTimeout(() => vid.current?.play(), 50); } }} />

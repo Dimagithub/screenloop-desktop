@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
-import { emit } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-export interface LiveSession { prompts: string[]; screen: string; hasMic: boolean }
+export interface LiveSession { prompts: string[]; screen: string; hasMic: boolean; voiceOnly: boolean; maxSeconds: number }
 export const SESSION_KEY = "sl-session";
 export type Tool = "pen" | "arrow" | "box" | "highlight";
 const COLORS = ["#ff4d4f", "#ffd23f", "#b9e84b", "#4da3ff"];
@@ -22,7 +22,7 @@ type Panel = null | "draw" | "comment" | "prompts";
 
 /** Floating recording bar: its own always-on-top window, excluded from the recording. */
 export default function Controls() {
-  const session: LiveSession = (() => { try { return JSON.parse(localStorage.getItem(SESSION_KEY) ?? ""); } catch { return { prompts: [], screen: "0", hasMic: false }; } })();
+  const session: LiveSession = (() => { try { return JSON.parse(localStorage.getItem(SESSION_KEY) ?? ""); } catch { return { prompts: [], screen: "0", hasMic: false, voiceOnly: false, maxSeconds: 0 }; } })();
   const [st, setSt] = useState({ elapsed: 0, paused: false, muted: false });
   const [panel, setPanel] = useState<Panel>(null);
   const [drawOn, setDrawOn] = useState(false);
@@ -38,6 +38,27 @@ export default function Controls() {
     const t = setInterval(() => invoke<typeof st>("recording_state").then(setSt).catch(() => {}), 400);
     return () => clearInterval(t);
   }, []);
+
+  // Time limit from the link: stop automatically, warn in the last minute.
+  const left = session.maxSeconds > 0 ? Math.max(0, session.maxSeconds - st.elapsed) : null;
+  const stopped = useRef(false);
+  useEffect(() => { if (left === 0 && !stopped.current) { stopped.current = true; emit("controls-stop"); } }, [left]);
+
+  // Draw to comment: a finished markup stroke becomes a comment with its own screenshot (debounced).
+  const strokeTimer = useRef<number>(0);
+  useEffect(() => {
+    const un = listen("stroke-done", () => {
+      clearTimeout(strokeTimer.current);
+      strokeTimer.current = window.setTimeout(async () => {
+        try {
+          const at = (await invoke<{ elapsed: number }>("recording_state")).elapsed;
+          const path = await invoke<string>("screenshot", { screen: session.screen });
+          emit("comment-added", { id: crypto.randomUUID(), at, body: "Marked on screen", shot: path });
+        } catch { /* recording may have stopped */ }
+      }, 1500);
+    });
+    return () => { un.then((f) => f()); clearTimeout(strokeTimer.current); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const heights: Record<string, number> = { draw: 64, comment: 270, prompts: Math.min(60 + session.prompts.length * 34, 260) };
   useEffect(() => { invoke("set_controls_height", { height: 72 + (panel ? heights[panel]! + 8 : 0) }).catch(() => {}); }, [panel]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -61,13 +82,13 @@ export default function Controls() {
     if (!wasPaused) { await invoke("pause_recording"); pausedForComment.current = true; }
     try {
       const at = (await invoke<typeof st>("recording_state")).elapsed;
-      const path = await invoke<string>("screenshot", { screen: session.screen });
+      const path = session.voiceOnly ? "" : await invoke<string>("screenshot", { screen: session.screen });
       setShot({ path, at });
     } catch { setShot(null); }
     setText(""); setPanel("comment");
   };
   const closeComment = async (save: boolean) => {
-    if (save && text.trim()) emit("comment-added", { id: crypto.randomUUID(), at: shot?.at ?? st.elapsed, body: text.trim(), shot: shot?.path ?? null });
+    if (save && text.trim()) emit("comment-added", { id: crypto.randomUUID(), at: shot?.at ?? st.elapsed, body: text.trim(), shot: shot?.path || null });
     setPanel(null); setShot(null);
     if (pausedForComment.current) { pausedForComment.current = false; await invoke("resume_recording"); }
   };
@@ -90,7 +111,7 @@ export default function Controls() {
       )}
       {panel === "comment" && (
         <div className="tray col" style={{ height: heights.comment }}>
-          {shot && <img src={convertFileSrc(shot.path)} alt="Frozen screen" className="shot" />}
+          {shot?.path && <img src={convertFileSrc(shot.path)} alt="Frozen screen" className="shot" />}
           <textarea autoFocus className="cin" placeholder="What do you want to say about this?" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) closeComment(true); }} />
           <div className="crow"><button className="tb txt" onClick={() => closeComment(false)}>Cancel</button><button className="save" onClick={() => closeComment(true)}>Save comment</button></div>
         </div>
@@ -102,9 +123,9 @@ export default function Controls() {
         </div>
       )}
       <div className="ctl">
-        <div className="time"><i className={`live ${st.paused ? "off" : ""}`} />{mmss(st.elapsed)}</div>
+        <div className="time"><i className={`live ${st.paused ? "off" : ""}`} />{mmss(st.elapsed)}{left !== null && left <= 60 && <span className="warn">{Math.ceil(left)}s left</span>}</div>
         <Btn label={st.paused ? "Resume" : "Pause"} icon={st.paused ? "M8 5v14l11-7Z" : "M6 5h4v14H6Z|M14 5h4v14h-4Z"} onClick={togglePause} disabled={panel === "comment"} />
-        <Btn label="Draw" icon="M12 20h9|M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" on={panel === "draw"} onClick={openDraw} />
+        {!session.voiceOnly && <Btn label="Draw" icon="M12 20h9|M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" on={panel === "draw"} onClick={openDraw} />}
         <Btn label="Comment" icon="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12Z" on={panel === "comment"} onClick={openComment} />
         <Btn label={st.muted ? "Unmute" : "Mute"} icon={st.muted ? "M3 3l18 18|M9 9v3a3 3 0 0 0 5.1 2.1|M15 9.3V6a3 3 0 0 0-5.7-1.3|M5 11a7 7 0 0 0 11.5 5.4M19 11a7 7 0 0 1-.9 3.4M12 18v3" : "M9 3h6v12H9Z|M5 11a7 7 0 0 0 14 0M12 18v3"} on={st.muted} onClick={toggleMute} disabled={!session.hasMic || panel === "comment"} title={session.hasMic ? "" : "No microphone selected"} />
         {session.prompts.length > 0 && <Btn label="Prompts" icon="M9 6h11M9 12h11M9 18h11|m3.5 6 1 1 2-2" on={panel === "prompts"} onClick={() => setPanel(panel === "prompts" ? null : "prompts")} />}

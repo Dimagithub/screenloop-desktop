@@ -226,3 +226,38 @@ pub async fn upload_file(path: String, url: String, content_type: String) -> Res
     }
     Ok(())
 }
+
+/// Floating control bar: always on top, undecorated, and excluded from screen capture
+/// (content protection), so it never appears in the recording on any monitor setup.
+#[tauri::command]
+pub fn open_controls(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri::{WebviewUrl, WebviewWindowBuilder};
+    if let Some(w) = app.get_webview_window("controls") {
+        return w.show().map_err(|e| e.to_string());
+    }
+    let (w, h) = (380.0, 72.0);
+    let mut b = WebviewWindowBuilder::new(&app, "controls", WebviewUrl::App("index.html?view=controls".into()))
+        .title("ScreenLoop controls")
+        .inner_size(w, h)
+        .decorations(false)
+        .always_on_top(true)
+        .resizable(false)
+        .skip_taskbar(true)
+        .content_protected(true)
+        .focused(false);
+    if let Ok(Some(m)) = app.primary_monitor() {
+        let s = m.scale_factor();
+        let size = m.size().to_logical::<f64>(s);
+        let pos = m.position().to_logical::<f64>(s);
+        b = b.position(pos.x + (size.width - w) / 2.0, pos.y + size.height - h - 48.0);
+    }
+    b.build().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn close_controls(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("controls") {
+        let _ = w.close();
+    }
+}

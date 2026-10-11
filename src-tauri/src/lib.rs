@@ -11,7 +11,9 @@ pub fn run() {
             recorder::list_devices,
             recorder::start_recording,
             recorder::stop_recording,
-            recorder::upload_file
+            recorder::upload_file,
+            recorder::open_controls,
+            recorder::close_controls
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

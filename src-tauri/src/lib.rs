@@ -6,13 +6,23 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(recorder::Recorder::default())
         .invoke_handler(tauri::generate_handler![
             recorder::list_devices,
             recorder::start_recording,
+            recorder::pause_recording,
+            recorder::resume_recording,
+            recorder::set_mute,
+            recorder::recording_state,
             recorder::stop_recording,
+            recorder::screenshot,
             recorder::upload_file,
+            recorder::file_size,
             recorder::open_controls,
+            recorder::set_controls_height,
+            recorder::open_overlay,
+            recorder::set_overlay_interactive,
             recorder::close_controls
         ])
         .run(tauri::generate_context!())

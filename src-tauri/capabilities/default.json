@@ -4,7 +4,8 @@
   "description": "Capability for the main window",
   "windows": [
     "main",
-    "controls"
+    "controls",
+    "overlay"
   ],
   "permissions": [
     "core:default",
@@ -16,6 +17,9 @@
     "core:window:allow-set-focus",
     "core:window:allow-show",
     "core:window:allow-hide",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-set-always-on-top",
+    "dialog:allow-open"
   ]
 }

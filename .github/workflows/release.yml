@@ -14,6 +14,8 @@ jobs:
             args: --target aarch64-apple-darwin
           - platform: macos-latest
             args: --target x86_64-apple-darwin
+          - platform: windows-latest
+            args: ""
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -26,13 +28,16 @@ jobs:
           workspaces: src-tauri
       - run: bun install --frozen-lockfile
       - name: Fetch LGPL ffmpeg sidecar
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          T=${{ contains(matrix.args, 'x86_64') && 'x86_64-apple-darwin' || 'aarch64-apple-darwin' }}
+          T=${{ matrix.platform == 'windows-latest' && 'x86_64-pc-windows-msvc' || (contains(matrix.args, 'x86_64') && 'x86_64-apple-darwin' || 'aarch64-apple-darwin') }}
+          X=$([ "${{ matrix.platform }}" = windows-latest ] && echo .exe || true)
           mkdir -p src-tauri/binaries && cd src-tauri/binaries
-          gh release download ffmpeg-7.1.1-1 -R ${{ github.repository }} -p "ffmpeg-$T" -p "ffmpeg-$T.sha256"
-          shasum -a 256 -c "ffmpeg-$T.sha256" && chmod +x "ffmpeg-$T"
+          gh release download ffmpeg-7.1.1-1 -R ${{ github.repository }} -p "ffmpeg-$T$X" -p "ffmpeg-$T$X.sha256"
+          sha256sum -c "ffmpeg-$T$X.sha256" 2>/dev/null || shasum -a 256 -c "ffmpeg-$T$X.sha256"
+          chmod +x "ffmpeg-$T$X"
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

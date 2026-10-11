@@ -30,3 +30,37 @@ jobs:
         run: |
           gh release view "${{ inputs.tag }}" >/dev/null 2>&1 || gh release create "${{ inputs.tag }}" -t "${{ inputs.tag }}" -n "LGPL ffmpeg sidecar. Built by scripts/build-ffmpeg.sh from the official ffmpeg and opus source tarballs." || true
           gh release upload "${{ inputs.tag }}" ffmpeg-${{ matrix.triple }} ffmpeg-${{ matrix.triple }}.sha256 --clobber
+
+  windows:
+    # Repackages BtbN's LGPL win64 build (pinned release + SHA-256); no compile needed.
+    permissions:
+      contents: write
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    env:
+      BTBN_TAG: autobuild-2026-10-11-13-04
+      BTBN_ZIP: ffmpeg-n8.1.3-17-gc389840894-win64-lgpl-8.1.zip
+      BTBN_SHA: 169455bbed2440c6633632e1c21279235d8e200eaecf1b1ee2bfe58a1a665a0e
+    steps:
+      - name: Download and verify
+        run: |
+          curl -fsSL -o ff.zip "https://github.com/BtbN/FFmpeg-Builds/releases/download/$BTBN_TAG/$BTBN_ZIP"
+          echo "$BTBN_SHA  ff.zip" | sha256sum -c -
+          unzip -q ff.zip "*/bin/ffmpeg.exe"
+          cp */bin/ffmpeg.exe ffmpeg-x86_64-pc-windows-msvc.exe
+      - name: Smoke test (LGPL, encoders, capture inputs)
+        run: |
+          F=./ffmpeg-x86_64-pc-windows-msvc.exe
+          $F -hide_banner -version | grep -q -- "--disable-gpl" || { echo "not LGPL-only"; exit 1; }
+          $F -hide_banner -version | grep -vq -- "--enable-gpl" 
+          $F -hide_banner -encoders | grep -E "h264_mf|libopus"
+          $F -hide_banner -devices 2>&1 | grep dshow
+          $F -hide_banner -filters | grep ddagrab
+      - run: sha256sum ffmpeg-x86_64-pc-windows-msvc.exe | tee ffmpeg-x86_64-pc-windows-msvc.exe.sha256
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "${{ inputs.tag }}" -R "${{ github.repository }}" >/dev/null 2>&1 || gh release create "${{ inputs.tag }}" -R "${{ github.repository }}" -t "${{ inputs.tag }}" -n "LGPL ffmpeg sidecars." || true
+          gh release upload "${{ inputs.tag }}" ffmpeg-x86_64-pc-windows-msvc.exe ffmpeg-x86_64-pc-windows-msvc.exe.sha256 --clobber -R "${{ github.repository }}"

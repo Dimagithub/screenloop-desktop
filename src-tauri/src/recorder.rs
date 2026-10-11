@@ -48,13 +48,14 @@ pub struct Finished {
 
 /// Bundled LGPL ffmpeg sidecar (next to the app binary); falls back to PATH when running from source.
 fn ffmpeg() -> std::path::PathBuf {
-    let bundled = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("ffmpeg")));
+    let bundled = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" })));
     bundled.filter(|p| p.exists()).unwrap_or_else(|| "ffmpeg".into())
 }
 
+#[cfg(target_os = "macos")]
 #[tauri::command]
-pub fn list_devices() -> Result<Devices, String> {
-    let out = Command::new(ffmpeg())
+pub fn list_devices(_app: tauri::AppHandle) -> Result<Devices, String> {
+    let out = hidden(Command::new(ffmpeg()))
         .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .output()
         .map_err(|e| format!("ffmpeg not found: {e}"))?;
@@ -75,6 +76,39 @@ pub fn list_devices() -> Result<Devices, String> {
         }
     }
     Ok(Devices { screens, mics })
+}
+
+// Windows: monitors come from Tauri (index = DXGI output index for ddagrab), mics from dshow.
+#[cfg(windows)]
+#[tauri::command]
+pub fn list_devices(app: tauri::AppHandle) -> Result<Devices, String> {
+    let screens = app
+        .available_monitors()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .enumerate()
+        .map(|(i, m)| Device { index: i.to_string(), name: format!("Display {} ({}x{})", i + 1, m.size().width, m.size().height) })
+        .collect();
+    let out = hidden(Command::new(ffmpeg()))
+        .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+        .output()
+        .map_err(|e| format!("ffmpeg not found: {e}"))?;
+    let text = String::from_utf8_lossy(&out.stderr);
+    // Lines look like:  [dshow @ ...] "Microphone (Realtek)" (audio)
+    let mics = text
+        .lines()
+        .filter(|l| l.trim_end().ends_with("(audio)"))
+        .filter_map(|l| l.split('"').nth(1))
+        .map(|n| Device { index: n.into(), name: n.into() })
+        .collect();
+    Ok(Devices { screens, mics })
+}
+
+/// No flashing console window when spawning ffmpeg from the GUI app on Windows.
+fn hidden(#[allow(unused_mut)] mut c: Command) -> Command {
+    #[cfg(windows)]
+    std::os::windows::process::CommandExt::creation_flags(&mut c, 0x0800_0000);
+    c
 }
 
 fn bitrate(h: u32, fps: u32) -> u32 {
@@ -98,21 +132,41 @@ pub fn start_recording(
     }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("recordings").join(uuid());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let input = format!("{}:{}", screen, mic.as_deref().unwrap_or("none"));
     let seg = chunk_seconds.max(120).to_string();
     let b = bitrate(height, fps);
-    let mut cmd = Command::new(ffmpeg());
-    cmd.args(["-hide_banner", "-loglevel", "error", "-y", "-f", "avfoundation", "-capture_cursor", "1", "-framerate", &fps.to_string(), "-i", &input]);
+    let mut cmd = hidden(Command::new(ffmpeg()));
+    cmd.args(["-hide_banner", "-loglevel", "error", "-y"]);
+    let (audio_in, vf, venc): (usize, String, Vec<String>);
+    #[cfg(target_os = "macos")]
+    {
+        let input = format!("{}:{}", screen, mic.as_deref().unwrap_or("none"));
+        cmd.args(["-f", "avfoundation", "-capture_cursor", "1", "-framerate", &fps.to_string(), "-i", &input]);
+        audio_in = 0;
+        vf = format!("scale=-2:{height}");
+        venc = ["-c:v", "h264_videotoolbox", "-realtime", "1"].map(String::from).to_vec();
+    }
+    #[cfg(windows)]
+    {
+        // ddagrab = Desktop Duplication (fast, includes cursor); frames are GPU textures, so download them.
+        cmd.args(["-f", "lavfi", "-i", &format!("ddagrab=output_idx={screen}:framerate={fps}:draw_mouse=1")]);
+        if let Some(m) = &mic {
+            cmd.args(["-use_wallclock_as_timestamps", "1", "-f", "dshow", "-i", &format!("audio={m}")]);
+        }
+        audio_in = 1;
+        vf = format!("hwdownload,format=bgra,scale=-2:{height}");
+        venc = ["-c:v", "h264_mf"].map(String::from).to_vec(); // ponytail: MF picks the MFT; prefer nvenc/qsv/amf when present
+    }
     // Output 1: video(+mic) parts.
-    cmd.args(["-map", "0:v", "-vf", &format!("scale=-2:{height}"), "-c:v", "h264_videotoolbox", "-realtime", "1", "-b:v", &b.to_string(), "-pix_fmt", "yuv420p", "-g", &(fps * 2).to_string(), "-force_key_frames", &format!("expr:gte(t,n_forced*{seg})")]);
+    cmd.args(["-map", "0:v", "-vf", &vf]).args(&venc);
+    cmd.args(["-b:v", &b.to_string(), "-pix_fmt", "yuv420p", "-g", &(fps * 2).to_string(), "-force_key_frames", &format!("expr:gte(t,n_forced*{seg})")]);
     if mic.is_some() {
-        cmd.args(["-map", "0:a", "-c:a", "aac", "-b:a", "64k"]);
+        cmd.args(["-map", &format!("{audio_in}:a"), "-c:a", "aac", "-b:a", "64k"]);
     }
     cmd.args(["-f", "segment", "-segment_time", &seg, "-segment_format", "mp4", "-reset_timestamps", "1", "-segment_start_number", "1"])
         .arg(dir.join("p%d.mp4"));
     // Output 2: audio-only parts for the transcript pipeline.
     if mic.is_some() {
-        cmd.args(["-map", "0:a", "-vn", "-c:a", "libopus", "-b:a", "32k", "-f", "segment", "-segment_time", &seg, "-segment_format", "webm", "-reset_timestamps", "1", "-segment_start_number", "1"])
+        cmd.args(["-map", &format!("{audio_in}:a"), "-vn", "-c:a", "libopus", "-b:a", "32k", "-f", "segment", "-segment_time", &seg, "-segment_format", "webm", "-reset_timestamps", "1", "-segment_start_number", "1"])
             .arg(dir.join("p%d.audio.webm"));
     }
     let child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;

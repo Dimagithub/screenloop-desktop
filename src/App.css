@@ -116,3 +116,4 @@ button {
 }
 .col { display: flex; flex-direction: column; gap: 10px; max-width: 420px; margin: 0 auto; }
 .err { color: #c0392b; }
+.upd{margin-top:16px;font-size:13px}

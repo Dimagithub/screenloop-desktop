@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import { supabase } from "./lib/supabase";
 import { api, tokenFromInput, type ResolvedLink } from "./lib/api";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import Recorder from "./Recorder";
 import "./App.css";
 
@@ -70,6 +72,21 @@ function Home({ session }: { session: Session | null }) {
   );
 }
 
+function UpdateButton() {
+  const [msg, setMsg] = useState("");
+  const run = async () => {
+    setMsg("Checking…");
+    try {
+      const u = await check();
+      if (!u) return setMsg("You're up to date.");
+      setMsg(`Installing ${u.version}…`);
+      await u.downloadAndInstall();
+      await relaunch();
+    } catch (e) { setMsg(String(e)); }
+  };
+  return <p className="upd"><button onClick={run}>Check for updates</button> {msg}</p>;
+}
+
 export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [ready, setReady] = useState(false);
@@ -84,6 +101,7 @@ export default function App() {
   return (
     <main className="container">
       <Home session={session} />
+      <UpdateButton />
       {!session && <button onClick={() => setShowSignIn(true)}>Sign in</button>}
     </main>
   );

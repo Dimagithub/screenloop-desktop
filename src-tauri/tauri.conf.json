@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "screenloop-desktop",
+  "productName": "ScreenLoop",
   "version": "0.1.0",
   "identifier": "com.devcom.screenloop",
   "build": {
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "screenloop-desktop",
+        "title": "ScreenLoop",
         "width": 800,
         "height": 600
       }
@@ -30,6 +30,16 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "createUpdaterArtifacts": true,
+    "category": "Productivity"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEFGRDA3NzgwMUREOUUxNDMKUldSRDRka2RnSGZRcjJPUnhBRHNMQmdiaDFYcyszc3ZYNTFpU1lsM29iTENuc25MVTJiYXhTMmIK",
+      "endpoints": [
+        "https://github.com/Dimagithub/screenloop-desktop/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

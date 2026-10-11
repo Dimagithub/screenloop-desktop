@@ -53,8 +53,9 @@ jobs:
       - name: Smoke test (LGPL, encoders, capture inputs)
         run: |
           F=./ffmpeg-x86_64-pc-windows-msvc.exe
-          $F -hide_banner -version | grep -q -- "--disable-gpl" || { echo "not LGPL-only"; exit 1; }
-          $F -hide_banner -version | grep -vq -- "--enable-gpl" 
+          # BtbN's LGPL build is LGPLv3 (--enable-version3); it must not be GPL or nonfree.
+          ! $F -hide_banner -version | grep -E -- "--enable-(gpl|nonfree)" || { echo "GPL/nonfree build"; exit 1; }
+          ! $F -hide_banner -encoders | grep -E "libx26[45]" || { echo "x264/x265 present"; exit 1; }
           $F -hide_banner -encoders | grep -E "h264_mf|libopus"
           $F -hide_banner -devices 2>&1 | grep dshow
           $F -hide_banner -filters | grep ddagrab

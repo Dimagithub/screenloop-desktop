@@ -50,6 +50,12 @@ pub fn run() {
         ])
         // Closing the main window quits the app even if the floating bar is open.
         .on_window_event(|w, e| {
+            // controls gone => never leave a click-capturing overlay behind
+            if w.label() == "controls" && matches!(e, tauri::WindowEvent::Destroyed) {
+                if let Some(o) = w.app_handle().get_webview_window("overlay") {
+                    let _ = o.close();
+                }
+            }
             if w.label() == "main" && matches!(e, tauri::WindowEvent::Destroyed) {
                 w.app_handle().exit(0);
             }

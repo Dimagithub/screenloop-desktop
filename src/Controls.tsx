@@ -72,6 +72,10 @@ export default function Controls() {
     setDrawOn(on);
     if (on) { emit("draw-tool", { tool, color }); }
   };
+  useEffect(() => {
+    const un = listen("draw-exit", () => { setPanel((p) => (p === "draw" ? null : p)); setDraw(false); });
+    return () => { un.then((f) => f()); };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const openDraw = () => { if (panel === "draw") { setPanel(null); setDraw(false); } else { setPanel("draw"); setDraw(true); } };
   useEffect(() => { if (drawOn) emit("draw-tool", { tool, color }); }, [tool, color, drawOn]);
 

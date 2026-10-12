@@ -690,7 +690,16 @@ pub async fn open_overlay(app: tauri::AppHandle, screen: String) -> Result<(), S
 #[tauri::command]
 pub fn set_overlay_interactive(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     let w = app.get_webview_window("overlay").ok_or("no overlay")?;
-    w.set_ignore_cursor_events(!on).map_err(|e| e.to_string())
+    w.set_ignore_cursor_events(!on).map_err(|e| e.to_string())?;
+    if on {
+        let _ = w.set_focus(); // so Esc reaches the overlay
+        // the bar must stay above the interactive overlay so it can always be clicked to leave drawing
+        if let Some(c) = app.get_webview_window("controls") {
+            let _ = c.set_always_on_top(false);
+            let _ = c.set_always_on_top(true);
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]

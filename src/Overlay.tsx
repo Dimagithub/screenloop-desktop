@@ -22,17 +22,20 @@ export default function Overlay() {
     const c = ref.current!;
     const fit = () => { c.width = innerWidth * devicePixelRatio; c.height = innerHeight * devicePixelRatio; draw(); };
     fit(); addEventListener("resize", fit);
+    // Ways out of drawing: Esc, right-click, or the Draw button on the bar.
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") emit("draw-exit"); };
+    addEventListener("keydown", key);
     const subs = [
       listen<{ tool: Tool; color: string }>("draw-tool", (e) => { tool.current = e.payload; }),
       listen("draw-undo", () => { shapes.current.pop(); draw(); }),
       listen("draw-clear", () => { shapes.current = []; draw(); }),
     ];
-    return () => { removeEventListener("resize", fit); subs.forEach((s) => s.then((f) => f())); };
+    return () => { removeEventListener("resize", fit); removeEventListener("keydown", key); subs.forEach((s) => s.then((f) => f())); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pt = (e: React.PointerEvent): [number, number] => [e.clientX / innerWidth, e.clientY / innerHeight];
   return (
-    <canvas ref={ref} style={{ position: "fixed", inset: 0, width: "100vw", height: "100vh", cursor: "crosshair", touchAction: "none" }}
+    <canvas ref={ref} onContextMenu={(e) => { e.preventDefault(); emit("draw-exit"); }} style={{ position: "fixed", inset: 0, width: "100vw", height: "100vh", cursor: "crosshair", touchAction: "none" }}
       onPointerDown={(e) => { (e.target as Element).setPointerCapture(e.pointerId); cur.current = { ...tool.current, pts: [pt(e)] }; }}
       onPointerMove={(e) => { if (!cur.current) return; const s = cur.current; if (s.tool === "pen" || s.tool === "highlight") s.pts.push(pt(e)); else s.pts[1] = pt(e); draw(); }}
       onPointerUp={() => { if (cur.current && cur.current.pts.length > 1) { shapes.current.push(cur.current); emit("stroke-done"); } cur.current = null; draw(); }} />

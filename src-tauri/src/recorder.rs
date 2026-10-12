@@ -702,6 +702,15 @@ pub fn set_overlay_interactive(app: tauri::AppHandle, on: bool) -> Result<(), St
     Ok(())
 }
 
+/// Put the bar back above the overlay (called after strokes and tool changes) so it never ends up under the crosshair canvas.
+#[tauri::command]
+pub fn raise_controls(app: tauri::AppHandle) {
+    if let Some(c) = app.get_webview_window("controls") {
+        let _ = c.set_always_on_top(false);
+        let _ = c.set_always_on_top(true);
+    }
+}
+
 #[tauri::command]
 pub fn close_controls(app: tauri::AppHandle) {
     for l in ["controls", "overlay"] {

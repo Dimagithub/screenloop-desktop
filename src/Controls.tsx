@@ -48,6 +48,7 @@ export default function Controls() {
   const strokeTimer = useRef<number>(0);
   useEffect(() => {
     const un = listen("stroke-done", () => {
+      invoke("raise_controls").catch(() => {});
       clearTimeout(strokeTimer.current);
       strokeTimer.current = window.setTimeout(async () => {
         try {
@@ -77,7 +78,7 @@ export default function Controls() {
     return () => { un.then((f) => f()); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const openDraw = () => { if (panel === "draw") { setPanel(null); setDraw(false); } else { setPanel("draw"); setDraw(true); } };
-  useEffect(() => { if (drawOn) emit("draw-tool", { tool, color }); }, [tool, color, drawOn]);
+  useEffect(() => { if (drawOn) { emit("draw-tool", { tool, color }); invoke("raise_controls").catch(() => {}); } }, [tool, color, drawOn]);
 
   const openComment = async () => {
     if (panel === "comment") return;

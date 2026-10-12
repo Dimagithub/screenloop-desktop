@@ -46,6 +46,7 @@ pub fn run() {
             recorder::set_controls_height,
             recorder::open_overlay,
             recorder::set_overlay_interactive,
+            recorder::raise_controls,
             recorder::close_controls
         ])
         // Closing the main window quits the app even if the floating bar is open.

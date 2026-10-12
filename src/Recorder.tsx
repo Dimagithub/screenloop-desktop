@@ -19,6 +19,7 @@ export interface Manifest { v: 1; token: string; link: ResolvedLink; quality: Qu
 
 const QUALITY: Record<Quality, [number, number]> = { low: [540, 8], moderate: [720, 10], high: [1440, 15] }; // same presets as web
 const LABEL: Record<Quality, string> = { low: "Save data", moderate: "Standard", high: "Sharp" };
+const HINT: Record<Quality, string> = { low: "Smallest upload (540p). Fine for talking over a simple screen.", moderate: "Balanced size and clarity (720p). Good for most recordings.", high: "Crispest text and detail (1440p), biggest upload. Use for small UI details." };
 const MIME: Record<string, string> = { pdf: "application/pdf", png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", webp: "image/webp", gif: "image/gif" };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function retry<T>(fn: () => Promise<T>, tries = 3): Promise<T> {
@@ -247,8 +248,8 @@ export default function Recorder({ token, link, onDone, resume }: { token: strin
   );
   const centered = (c: React.ReactNode) => <>{title}<div className="page" style={{ justifyContent: "center" }}><div className="sendbox">{c}</div></div></>;
 
-  if (stage === "sent") return centered(<><h1>Sent</h1><p className="muted">Thank you. Your recording is being turned into a document.</p><button className="btn lime" onClick={onDone}>Done</button></>);
-  if (stage === "sending") return centered(<><h1>Sending…</h1><p className="muted">{msg || "Working…"}</p></>);
+  if (stage === "sent") return centered(<><h1>Uploaded</h1><p className="muted">Thank you. Your recording is being turned into a document.</p><button className="btn lime" onClick={onDone}>Done</button></>);
+  if (stage === "sending") return centered(<><h1>Uploading…</h1><p className="muted">{msg || "Working…"}</p></>);
   if (stage === "countdown") return centered(<><div className="count" aria-live="assertive">{count || "●"}</div><p className="muted">Recording starts in {Math.max(count, 0)}…</p><button className="linkbtn" onClick={() => setStage("setup")}>Cancel</button></>);
   if (stage === "recording") return centered(<><h1>Recording</h1><p className="muted">Use the floating bar to pause, draw, comment or stop. It is never part of your recording.{upl > 0 ? ` ${upl} part${upl > 1 ? "s" : ""} already uploaded.` : ""}</p><button className="btn danger" onClick={finish}>Stop recording</button></>);
 
@@ -277,7 +278,7 @@ export default function Recorder({ token, link, onDone, resume }: { token: strin
           </div>
           <div className="spacer" />
           {msg && <p className="err">{msg}</p>}
-          <button className="btn lime big" onClick={send} disabled={resume && !done}>Send{link.sender ? ` to ${link.sender.name.split(" ")[0]}` : ""}</button>
+          <button className="btn lime big" onClick={send} disabled={resume && !done}>Upload</button>
           <div style={{ display: "flex", justifyContent: "space-between" }}>
             {resume || noMedia ? <button className="linkbtn" onClick={discard}>{resume ? "Discard recording" : "Back"}</button>
               : <button className="linkbtn" onClick={() => { setDone(null); setComments([]); setAttachments([]); setStage("setup"); }}>Record again</button>}
@@ -308,12 +309,13 @@ export default function Recorder({ token, link, onDone, resume }: { token: strin
           {!voiceOnly && <div className="field"><label htmlFor="scr">Screen</label><select id="scr" className="input" value={screen} onChange={(e) => setScreen(e.target.value)}>{screens.map((d) => <option key={d.index} value={d.index}>{d.name}</option>)}</select></div>}
           <div className="field"><label htmlFor="mic">Microphone</label><select id="mic" className="input" value={mic} onChange={(e) => setMic(e.target.value)}>{!voiceOnly && <option value="">No microphone</option>}{mics.map((d) => <option key={d.index} value={d.index}>{d.name}</option>)}</select></div>
           <label className="check"><input type="checkbox" checked={sysAudio} onChange={(e) => setSysAudio(e.target.checked)} />Include computer audio <span className="muted">(what you hear, e.g. a video you play)</span></label>
-          {!voiceOnly && <div className="seg" role="group" aria-label="Quality">{(Object.keys(QUALITY) as Quality[]).map((q) => <button key={q} className={q === quality ? "on" : ""} onClick={() => setQuality(q)}>{LABEL[q]}</button>)}</div>}
+          {!voiceOnly && <div className="field"><label>Video quality</label><div className="seg" role="group" aria-label="Video quality">{(Object.keys(QUALITY) as Quality[]).map((q) => <button key={q} className={q === quality ? "on" : ""} onClick={() => setQuality(q)}>{LABEL[q]}</button>)}</div><span className="muted" style={{ fontSize: 12 }}>{HINT[quality]}</span></div>}
           <div className="spacer" />
+          <div className="stickybar">
           {msg && <p className="err">{msg}</p>}
           <button className="btn lime big" onClick={startCountdown} disabled={voiceOnly ? !mic : !screen}><i className="rec-dot" style={{ width: 14, height: 14 }} />Start recording</button>
-          <div style={{ textAlign: "center" }}><button className="linkbtn" onClick={() => { setDone(null); setStage("review"); }}>Send without recording</button></div>
           <div className="muted" style={{ textAlign: "center", fontSize: 12 }}>{link.maxDurationMin ? `Up to ${link.maxDurationMin} min · ` : ""}This window hides while you record</div>
+          </div>
         </div>
       </div>
     </>

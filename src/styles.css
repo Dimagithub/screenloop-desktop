@@ -102,3 +102,6 @@ textarea.input { height: 90px; padding: 10px 12px; resize: none; }
 .ctl .warn { margin-left: 8px; font: 700 11px "DM Sans", sans-serif; color: var(--amber); }
 .count { font: 700 120px "Space Grotesk", sans-serif; color: var(--lime); line-height: 1; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; } .check input { accent-color: var(--lime); width: 16px; height: 16px; }
+
+.stickybar { position: sticky; bottom: 0; background: var(--bg); padding: 8px 0 2px; display: flex; flex-direction: column; gap: 8px; }
+.ctl-wrap { cursor: default; }

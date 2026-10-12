@@ -613,11 +613,11 @@ fn bar_pos(app: &tauri::AppHandle, h: f64) -> Option<(f64, f64)> {
 /// Floating control bar: always on top, undecorated, excluded from screen capture (content
 /// protection), so it never appears in the recording on any monitor setup.
 #[tauri::command]
-pub fn open_controls(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn open_controls(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("controls") {
         return w.show().map_err(|e| e.to_string());
     }
-    let mut b = WebviewWindowBuilder::new(&app, "controls", WebviewUrl::App("index.html?view=controls".into()))
+    let mut b = WebviewWindowBuilder::new(&app, "controls", WebviewUrl::App("index.html".into()))
         .title("ScreenLoop controls")
         .inner_size(BAR_W, BAR_H)
         .decorations(false)
@@ -650,7 +650,7 @@ pub fn set_controls_height(app: tauri::AppHandle, height: f64) -> Result<(), Str
 /// Transparent full-screen canvas on one monitor for live markup. NOT content protected, so
 /// strokes are part of the recording. Click-through until draw mode is turned on.
 #[tauri::command]
-pub fn open_overlay(app: tauri::AppHandle, screen: String) -> Result<(), String> {
+pub async fn open_overlay(app: tauri::AppHandle, screen: String) -> Result<(), String> {
     if let Some(w) = app.get_webview_window("overlay") {
         return w.show().map_err(|e| e.to_string());
     }
@@ -659,7 +659,7 @@ pub fn open_overlay(app: tauri::AppHandle, screen: String) -> Result<(), String>
     let m = monitors.get(idx).or(monitors.first()).ok_or("No monitor")?;
     let s = m.scale_factor();
     let (size, pos) = (m.size().to_logical::<f64>(s), m.position().to_logical::<f64>(s));
-    let w = WebviewWindowBuilder::new(&app, "overlay", WebviewUrl::App("index.html?view=overlay".into()))
+    let w = WebviewWindowBuilder::new(&app, "overlay", WebviewUrl::App("index.html".into()))
         .title("ScreenLoop markup")
         .decorations(false)
         .transparent(true)

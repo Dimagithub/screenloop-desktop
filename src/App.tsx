@@ -75,7 +75,7 @@ function UpdateLink() {
   return <><button className="linkbtn" onClick={run}>Check for updates</button>{msg && <span>{msg}</span>}</>;
 }
 
-function Home({ session, onOpen, onUpload }: { session: Session | null; onOpen: (r: Rec) => void; onUpload: () => void }) {
+function Home({ session, onOpen, onUpload, onSignIn }: { session: Session | null; onOpen: (r: Rec) => void; onUpload: () => void; onSignIn: () => void }) {
   const [input, setInput] = useState("");
   const [err, setErr] = useState("");
   const [recent, setRecent] = useState<Recent[]>([]);
@@ -107,6 +107,7 @@ function Home({ session, onOpen, onUpload }: { session: Session | null; onOpen: 
     } catch (e) { setErr((e as Error).message); }
   };
   const startSelf = async () => {
+    if (!session) return onSignIn();
     setErr("");
     try {
       const { token } = await api<{ token: string }>("start-recording", { title: "Screen recording", source: "recorded" });
@@ -118,13 +119,13 @@ function Home({ session, onOpen, onUpload }: { session: Session | null; onOpen: 
     <div className="page">
       <div className="hero"><h1>What do you want to record?</h1><p>Share your screen and talk it through. We turn it into a document.</p></div>
       <div className="tiles">
-        <button className="tile primary" onClick={startSelf} disabled={!session} title={session ? "" : "Sign in to record on your own"}>
+        <button className="tile primary" onClick={startSelf}>
           <div className="ico"><i className="rec-dot" /></div><div><b>New recording</b><span>Screen and voice</span></div>
         </button>
         <button className="tile" onClick={() => document.getElementById("link")?.focus()}>
           <div className="ico"><Icon d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1|M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1-1" /></div><div><b>Open a link</b><span>Someone asked for feedback</span></div>
         </button>
-        <button className="tile" onClick={onUpload} disabled={!session} title={session ? "" : "Sign in to upload"}>
+        <button className="tile" onClick={() => (session ? onUpload() : onSignIn())}>
           <div className="ico"><Icon d="M12 16V4|m7 9 5-5 5 5|M5 20h14" /></div><div><b>Upload a video</b><span>Use an existing file</span></div>
         </button>
       </div>
@@ -200,7 +201,7 @@ export default function App() {
           ? <div style={{ display: "flex", alignItems: "center", gap: 12 }}><span className="muted">{session.user.email}</span><div className="avatar">{(session.user.email ?? "?").slice(0, 2).toUpperCase()}</div><button className="linkbtn" onClick={() => supabase.auth.signOut()}>Sign out</button></div>
           : <button className="linkbtn" onClick={() => setSignIn(true)}>Sign in</button>}
       </div>
-      {signIn && !session ? <div className="page" style={{ justifyContent: "center" }}><SignIn onBack={() => setSignIn(false)} /></div> : <Home session={session} onOpen={setRec} onUpload={() => setUpload(true)} />}
+      {signIn && !session ? <div className="page" style={{ justifyContent: "center" }}><SignIn onBack={() => setSignIn(false)} /></div> : <Home session={session} onOpen={setRec} onUpload={() => setUpload(true)} onSignIn={() => setSignIn(true)} />}
       <div className="footer">Version {__APP_VERSION__} · <UpdateLink /></div>
     </div>
   );

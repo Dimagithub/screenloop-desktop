@@ -2,6 +2,8 @@ mod auth;
 mod recorder;
 mod sysaudio;
 
+use tauri::Manager;
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -46,6 +48,18 @@ pub fn run() {
             recorder::set_overlay_interactive,
             recorder::close_controls
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        // Closing the main window quits the app even if the floating bar is open.
+        .on_window_event(|w, e| {
+            if w.label() == "main" && matches!(e, tauri::WindowEvent::Destroyed) {
+                w.app_handle().exit(0);
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        // Never leave ffmpeg running after exit: a running ffmpeg.exe blocks updates on Windows.
+        .run(|app, ev| {
+            if let tauri::RunEvent::Exit = ev {
+                recorder::stop_on_exit(app);
+            }
+        });
 }

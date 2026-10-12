@@ -470,6 +470,13 @@ pub fn stop_recording(state: State<Recorder>) -> Result<Finished, String> {
     Ok(Finished { parts, duration_seconds: s.clock.round() as u32 })
 }
 
+/// App is quitting: end the running ffmpeg so the part on disk is closed and the process is gone.
+pub fn stop_on_exit(app: &tauri::AppHandle) {
+    if let Some(mut s) = app.state::<Recorder>().0.lock().unwrap().take() {
+        s.end_run();
+    }
+}
+
 // ---- Crash recovery: manifests + rebuilding parts from files on disk ----
 
 fn sessions_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {

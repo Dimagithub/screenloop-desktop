@@ -105,3 +105,7 @@ textarea.input { height: 90px; padding: 10px 12px; resize: none; }
 
 .stickybar { position: sticky; bottom: 0; background: var(--bg); padding: 8px 0 2px; display: flex; flex-direction: column; gap: 8px; }
 .ctl-wrap { cursor: default; }
+.tiles { grid-template-columns: repeat(4, minmax(0, 1fr)) !important; max-width: 900px !important; }
+.docrow { border: 0; color: inherit; width: 100%; cursor: pointer; } .docrow:hover { background: var(--border); }
+.md { line-height: 1.6; font-size: 15px; } .md h1, .md h2, .md h3 { font-family: "Space Grotesk", sans-serif; margin: 1.2em 0 .4em; } .md code { background: var(--surface); padding: 1px 5px; border-radius: 4px; } .md table { border-collapse: collapse; } .md td, .md th { border: 1px solid var(--border); padding: 4px 8px; }
+.newdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--lime); margin-left: 6px; }

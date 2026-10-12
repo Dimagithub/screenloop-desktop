@@ -49,14 +49,14 @@ function useMeter(label: string, on: boolean) {
   return level;
 }
 
-export default function Recorder({ token, link, onDone, resume }: { token: string; link: ResolvedLink; onDone: () => void; resume?: { dir: string; manifest: Manifest } }) {
+export default function Recorder({ token, link, onDone, resume, filesOnly }: { token: string; link: ResolvedLink; onDone: () => void; filesOnly?: boolean; resume?: { dir: string; manifest: Manifest } }) {
   const [screens, setScreens] = useState<Device[]>([]);
   const [mics, setMics] = useState<Device[]>([]);
   const [screen, setScreen] = useState(resume?.manifest.screen ?? "");
   const [mic, setMic] = useState("");
   const [quality, setQuality] = useState<Quality>(resume?.manifest.quality ?? (link.quality as Quality) ?? "moderate");
   const [voiceOnly, setVoiceOnly] = useState(resume?.manifest.voiceOnly ?? false);
-  const [stage, setStage] = useState<"setup" | "countdown" | "recording" | "review" | "sending" | "sent">(resume ? "review" : "setup");
+  const [stage, setStage] = useState<"setup" | "countdown" | "recording" | "review" | "sending" | "sent">(resume || filesOnly ? "review" : "setup");
   const [count, setCount] = useState(3);
   const [sysAudio, setSysAudio] = useState(true);
   const [done, setDone] = useState<Finished | null>(null);
@@ -242,7 +242,7 @@ export default function Recorder({ token, link, onDone, resume }: { token: strin
 
   const title = (
     <div className="topbar">
-      <div className="brand">{stage === "setup" && <button className="linkbtn" onClick={onDone}>‹ Back</button>}<span>{link.title}</span>{link.sender && <span className="muted">from {link.sender.name}</span>}</div>
+      <div className="brand">{(stage === "setup" || (stage === "review" && (resume || noMedia))) && <button className="linkbtn" onClick={onDone}>‹ Back</button>}<span>{link.title}</span>{link.sender && <span className="muted">from {link.sender.name}</span>}</div>
       {done && stage === "review" && <span className="chip">Recorded {fmt(done.duration_seconds)} · {comments.length} comment{comments.length === 1 ? "" : "s"}</span>}
     </div>
   );

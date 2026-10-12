@@ -10,10 +10,10 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import Recorder, { type Manifest } from "./Recorder";
 import UploadVideo from "./UploadVideo";
+import Recordings, { useLibrary, type Library } from "./Recordings";
 
-type Rec = { token: string; link: ResolvedLink; resume?: { dir: string; manifest: Manifest } };
+type Rec = { token: string; link: ResolvedLink; filesOnly?: boolean; resume?: { dir: string; manifest: Manifest } };
 interface Unsent { dir: string; manifest: string }
-interface Recent { id: string; title: string; created_at: string; duration_seconds: number; transcript_status: string | null }
 
 const Icon = ({ d }: { d: string }) => (
   <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{d.split("|").map((x) => <path key={x} d={x} />)}</svg>
@@ -75,10 +75,9 @@ function UpdateLink() {
   return <><button className="linkbtn" onClick={run}>Check for updates</button>{msg && <span>{msg}</span>}</>;
 }
 
-function Home({ session, onOpen, onUpload, onSignIn }: { session: Session | null; onOpen: (r: Rec) => void; onUpload: () => void; onSignIn: () => void }) {
+function Home({ session, lib, onOpen, onUpload, onSignIn, onAll }: { session: Session | null; lib: Library; onOpen: (r: Rec) => void; onUpload: () => void; onSignIn: () => void; onAll: () => void }) {
   const [input, setInput] = useState("");
   const [err, setErr] = useState("");
-  const [recent, setRecent] = useState<Recent[]>([]);
   const [unsent, setUnsent] = useState<{ dir: string; m: Manifest }[]>([]);
   useEffect(() => {
     invoke<Unsent[]>("list_unsent").then((l) => setUnsent(l.flatMap((u) => { try { return [{ dir: u.dir, m: JSON.parse(u.manifest) as Manifest }]; } catch { return []; } }))).catch(() => {});
@@ -92,9 +91,8 @@ function Home({ session, onOpen, onUpload, onSignIn }: { session: Session | null
     } catch (e) { setErr((e as Error).message); }
   };
   const discardOne = async (u: { dir: string }) => { await invoke("delete_session", { dir: u.dir }).catch(() => {}); setUnsent((l) => l.filter((x) => x.dir !== u.dir)); };
-  useEffect(() => {
-    if (session) api<Recent[]>("my-recordings").then((r) => setRecent(r.slice(0, 3))).catch(() => {});
-  }, [session]);
+  const recent = lib.recs.slice(0, 3);
+  const newCount = lib.docs.filter((d) => lib.isNew(d.id)).length;
 
   const openLink = async (raw: string) => {
     setErr("");
@@ -106,12 +104,14 @@ function Home({ session, onOpen, onUpload, onSignIn }: { session: Session | null
       onOpen({ token, link });
     } catch (e) { setErr((e as Error).message); }
   };
-  const startSelf = async () => {
+  const startSelf = async (filesOnly = false) => {
     if (!session) return onSignIn();
     setErr("");
     try {
-      const { token } = await api<{ token: string }>("start-recording", { title: "Screen recording", source: "recorded" });
-      await openLink(token);
+      const { token } = await api<{ token: string }>("start-recording", { title: filesOnly ? "Files" : "Screen recording", source: "recorded" });
+      const link = await api<ResolvedLink>("resolve-link", { token });
+      if (link.state !== "ok") return setErr(`This link is ${link.state}.`);
+      onOpen({ token, link, filesOnly });
     } catch (e) { setErr((e as Error).message); }
   };
 
@@ -119,7 +119,7 @@ function Home({ session, onOpen, onUpload, onSignIn }: { session: Session | null
     <div className="page">
       <div className="hero"><h1>What do you want to record?</h1><p>Share your screen and talk it through. We turn it into a document.</p></div>
       <div className="tiles">
-        <button className="tile primary" onClick={startSelf}>
+        <button className="tile primary" onClick={() => startSelf()}>
           <div className="ico"><i className="rec-dot" /></div><div><b>New recording</b><span>Screen and voice</span></div>
         </button>
         <button className="tile" onClick={() => document.getElementById("link")?.focus()}>
@@ -127,6 +127,9 @@ function Home({ session, onOpen, onUpload, onSignIn }: { session: Session | null
         </button>
         <button className="tile" onClick={() => (session ? onUpload() : onSignIn())}>
           <div className="ico"><Icon d="M12 16V4|m7 9 5-5 5 5|M5 20h14" /></div><div><b>Upload a video</b><span>Use an existing file</span></div>
+        </button>
+        <button className="tile" onClick={() => startSelf(true)}>
+          <div className="ico"><Icon d="M21 12.5 12.5 21a5.5 5.5 0 0 1-7.8-7.8l9-9a3.7 3.7 0 0 1 5.2 5.2l-9 9a1.8 1.8 0 0 1-2.6-2.6l8.5-8.4" /></div><div><b>Send files</b><span>PDFs and images</span></div>
         </button>
       </div>
       <form className="joinbar" onSubmit={(e) => { e.preventDefault(); openLink(input); }}>
@@ -149,12 +152,12 @@ function Home({ session, onOpen, onUpload, onSignIn }: { session: Session | null
       )}
       {session && recent.length > 0 && (
         <div className="list">
-          <div className="eyebrow">Recent</div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}><div className="eyebrow">Recent{newCount > 0 && <span className="newdot" title="New documents" />}</div><button className="linkbtn" onClick={onAll}>{newCount > 0 ? `${newCount} new document${newCount > 1 ? "s" : ""} · ` : ""}View all</button></div>
           {recent.map((r) => (
-            <div className="row" key={r.id}>
+            <div className="row" key={r.id} onClick={onAll} style={{ cursor: "pointer" }}>
               <div className="thumb" />
-              <div className="meta"><b>{r.title}</b><span className="muted">{new Date(r.created_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })} · {Math.max(1, Math.round(r.duration_seconds / 60))} min</span></div>
-              <span className={`chip ${r.transcript_status === "done" ? "ok" : "wait"}`}>{r.transcript_status === "done" ? "Document ready" : "Processing"}</span>
+              <div className="meta"><b>{r.title}</b><span className="muted">{new Date(r.created_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })} · {Math.max(1, Math.round((r.duration_seconds ?? 0) / 60))} min</span></div>
+              {(() => { const n = lib.docs.filter((d) => d.submission_id === r.id && lib.isNew(d.id)).length; return <span className={`chip ${n || r.transcript_status === "done" ? "ok" : "wait"}`}>{n ? `${n} new document${n > 1 ? "s" : ""}` : r.transcript_status === "done" ? "Document ready" : "Processing"}</span>; })()}
             </div>
           ))}
         </div>
@@ -169,6 +172,8 @@ export default function App() {
   const [signIn, setSignIn] = useState(false);
   const [rec, setRec] = useState<Rec | null>(null);
   const [upload, setUpload] = useState(false);
+  const [all, setAll] = useState(false);
+  const lib = useLibrary(!!session);
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setReady(true); });
     const { data } = supabase.auth.onAuthStateChange((_e, s) => setSession(s));
@@ -192,7 +197,7 @@ export default function App() {
   }, []);
   if (!ready) return null;
   if (upload) return <div className="app"><div className="topbar"><div className="brand"><div className="logo"><i /></div>ScreenLoop</div></div><UploadVideo onDone={() => setUpload(false)} /></div>;
-  if (rec) return <div className="app"><Recorder key={rec.resume?.dir ?? rec.token} token={rec.token} link={rec.link} resume={rec.resume} onDone={() => setRec(null)} /></div>;
+  if (rec) return <div className="app"><Recorder key={rec.resume?.dir ?? rec.token} token={rec.token} link={rec.link} resume={rec.resume} filesOnly={rec.filesOnly} onDone={() => setRec(null)} /></div>;
   return (
     <div className="app">
       <div className="topbar">
@@ -201,7 +206,7 @@ export default function App() {
           ? <div style={{ display: "flex", alignItems: "center", gap: 12 }}><span className="muted">{session.user.email}</span><div className="avatar">{(session.user.email ?? "?").slice(0, 2).toUpperCase()}</div><button className="linkbtn" onClick={() => supabase.auth.signOut()}>Sign out</button></div>
           : <button className="linkbtn" onClick={() => setSignIn(true)}>Sign in</button>}
       </div>
-      {signIn && !session ? <div className="page" style={{ justifyContent: "center" }}><SignIn onBack={() => setSignIn(false)} /></div> : <Home session={session} onOpen={setRec} onUpload={() => setUpload(true)} onSignIn={() => setSignIn(true)} />}
+      {all && session ? <Recordings lib={lib} onBack={() => setAll(false)} /> : signIn && !session ? <div className="page" style={{ justifyContent: "center" }}><SignIn onBack={() => setSignIn(false)} /></div> : <Home session={session} lib={lib} onOpen={setRec} onUpload={() => setUpload(true)} onSignIn={() => setSignIn(true)} onAll={() => setAll(true)} />}
       <div className="footer">Version {__APP_VERSION__} · <UpdateLink /></div>
     </div>
   );

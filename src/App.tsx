@@ -10,6 +10,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import Recorder, { type Manifest } from "./Recorder";
 import UploadVideo from "./UploadVideo";
+import Permissions, { usePermissions } from "./Permissions";
 import Recordings, { useLibrary, type Library } from "./Recordings";
 
 type Rec = { token: string; link: ResolvedLink; filesOnly?: boolean; resume?: { dir: string; manifest: Manifest } };
@@ -173,6 +174,8 @@ export default function App() {
   const [rec, setRec] = useState<Rec | null>(null);
   const [upload, setUpload] = useState(false);
   const [all, setAll] = useState(false);
+  const [micSkipped, setMicSkipped] = useState(() => { try { return localStorage.getItem("sl-mic-skipped") === "1"; } catch { return false; } });
+  const perms = usePermissions();
   const lib = useLibrary(!!session);
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => { setSession(data.session); setReady(true); });
@@ -195,7 +198,9 @@ export default function App() {
     const un = onOpenUrl((urls) => urls.forEach((u) => openRef.current(u)));
     return () => { un.then((f) => f()); };
   }, []);
-  if (!ready) return null;
+  if (!ready || !perms.p) return null;
+  // Everything must be allowed (or the microphone knowingly skipped) before the app is usable.
+  if (!rec && !(perms.p.screen && (perms.p.mic || micSkipped))) return <div className="app"><div className="topbar"><div className="brand"><div className="logo"><i /></div>ScreenLoop</div></div><Permissions screen={perms.p.screen} mic={perms.p.mic} onContinue={() => { setMicSkipped(true); try { localStorage.setItem("sl-mic-skipped", "1"); } catch { /* ignore */ } }} /></div>;
   if (upload) return <div className="app"><div className="topbar"><div className="brand"><div className="logo"><i /></div>ScreenLoop</div></div><UploadVideo onDone={() => setUpload(false)} /></div>;
   if (rec) return <div className="app"><Recorder key={rec.resume?.dir ?? rec.token} token={rec.token} link={rec.link} resume={rec.resume} filesOnly={rec.filesOnly} onDone={() => setRec(null)} /></div>;
   return (

@@ -34,7 +34,7 @@ fn ffmpeg() -> std::path::PathBuf {
 
 #[cfg(target_os = "macos")]
 #[tauri::command]
-pub fn list_devices(_app: tauri::AppHandle) -> Result<Devices, String> {
+pub async fn list_devices(_app: tauri::AppHandle) -> Result<Devices, String> {
     let out = hidden(Command::new(ffmpeg()))
         .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
         .output()
@@ -55,13 +55,17 @@ pub fn list_devices(_app: tauri::AppHandle) -> Result<Devices, String> {
             screens.push(d);
         }
     }
+    *MAC_SCREENS.lock().unwrap() = screens.iter().map(|d| d.index.clone()).collect();
     Ok(Devices { screens, mics })
 }
+
+#[cfg(not(windows))]
+static MAC_SCREENS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 // Windows: monitors come from Tauri (index = DXGI output index for ddagrab), mics from dshow.
 #[cfg(windows)]
 #[tauri::command]
-pub fn list_devices(app: tauri::AppHandle) -> Result<Devices, String> {
+pub async fn list_devices(app: tauri::AppHandle) -> Result<Devices, String> {
     let screens = app
         .available_monitors()
         .map_err(|e| e.to_string())?
@@ -379,9 +383,9 @@ impl Session {
 }
 
 #[tauri::command]
-pub fn start_recording(
+pub async fn start_recording(
     app: tauri::AppHandle,
-    state: State<Recorder>,
+    state: State<'_, Recorder>,
     screen: String,
     mic: Option<String>,
     audio_only: bool,
@@ -402,12 +406,12 @@ pub fn start_recording(
     Ok(dir.to_string_lossy().into())
 }
 
-fn with<R>(state: &State<Recorder>, f: impl FnOnce(&mut Session) -> Result<R, String>) -> Result<R, String> {
+fn with<R>(state: &State<'_, Recorder>, f: impl FnOnce(&mut Session) -> Result<R, String>) -> Result<R, String> {
     f(state.0.lock().unwrap().as_mut().ok_or("Not recording")?)
 }
 
 #[tauri::command]
-pub fn pause_recording(state: State<Recorder>) -> Result<(), String> {
+pub async fn pause_recording(state: State<'_, Recorder>) -> Result<(), String> {
     with(&state, |s| {
         if !s.paused {
             s.end_run();
@@ -418,7 +422,7 @@ pub fn pause_recording(state: State<Recorder>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn resume_recording(state: State<Recorder>) -> Result<(), String> {
+pub async fn resume_recording(state: State<'_, Recorder>) -> Result<(), String> {
     with(&state, |s| {
         if s.paused {
             s.paused = false;
@@ -430,7 +434,7 @@ pub fn resume_recording(state: State<Recorder>) -> Result<(), String> {
 
 /// Mute/unmute the mic: the next run is recorded without (or with) audio.
 #[tauri::command]
-pub fn set_mute(state: State<Recorder>, muted: bool) -> Result<(), String> {
+pub async fn set_mute(state: State<'_, Recorder>, muted: bool) -> Result<(), String> {
     with(&state, |s| {
         if s.mic.is_none() || s.muted == muted {
             return Ok(());
@@ -445,13 +449,13 @@ pub fn set_mute(state: State<Recorder>, muted: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub fn recording_state(state: State<Recorder>) -> Result<State_, String> {
+pub async fn recording_state(state: State<'_, Recorder>) -> Result<State_, String> {
     with(&state, |s| Ok(State_ { elapsed: s.elapsed(), paused: s.paused, muted: s.muted }))
 }
 
 /// Parts that are final while recording continues (for background upload).
 #[tauri::command]
-pub fn completed_parts(state: State<Recorder>) -> Result<Vec<Part>, String> {
+pub async fn completed_parts(state: State<'_, Recorder>) -> Result<Vec<Part>, String> {
     with(&state, |s| {
         s.mix_ready(true);
         Ok(s.parts(true))
@@ -459,7 +463,7 @@ pub fn completed_parts(state: State<Recorder>) -> Result<Vec<Part>, String> {
 }
 
 #[tauri::command]
-pub fn stop_recording(state: State<Recorder>) -> Result<Finished, String> {
+pub async fn stop_recording(state: State<'_, Recorder>) -> Result<Finished, String> {
     let mut s = state.0.lock().unwrap().take().ok_or("Not recording")?;
     s.end_run();
     s.mix_ready(false);
@@ -506,7 +510,7 @@ pub struct Unsent {
 
 /// Recording folders that have a manifest but were never sent (newest first).
 #[tauri::command]
-pub fn list_unsent(app: tauri::AppHandle, state: State<Recorder>) -> Result<Vec<Unsent>, String> {
+pub async fn list_unsent(app: tauri::AppHandle, state: State<'_, Recorder>) -> Result<Vec<Unsent>, String> {
     let live = state.0.lock().unwrap().as_ref().map(|s| s.dir.clone());
     let mut out = vec![];
     let Ok(rd) = std::fs::read_dir(sessions_dir(&app)?) else { return Ok(out) };
@@ -541,7 +545,7 @@ fn probe_secs(path: &std::path::Path) -> f64 {
 
 /// Rebuild the part list of an interrupted recording from the files that survived.
 #[tauri::command]
-pub fn recover_parts(app: tauri::AppHandle, dir: String, audio_only: bool) -> Result<Finished, String> {
+pub async fn recover_parts(app: tauri::AppHandle, dir: String, audio_only: bool) -> Result<Finished, String> {
     let p = session_dir(&app, &dir)?;
     let mut parts = vec![];
     let mut clock = 0.0;
@@ -572,7 +576,7 @@ fn monitor_ord(app: &tauri::AppHandle, screen: &str) -> usize {
     #[cfg(windows)]
     { let _ = app; screen.parse().unwrap_or(0) }
     #[cfg(not(windows))]
-    { list_devices(app.clone()).ok().and_then(|d| d.screens.iter().position(|x| x.index == screen)).unwrap_or(0) }
+    { let _ = app; MAC_SCREENS.lock().unwrap().iter().position(|x| x == screen).unwrap_or(0) }
 }
 
 /// The Tauri monitor for the chosen screen. macOS: match xcap's monitor by position, since the two lists can be ordered differently.
@@ -616,7 +620,7 @@ pub fn request_screen_access() -> bool {
 
 /// Grab a JPEG of one monitor (includes any drawn markup; excludes our protected control windows).
 #[tauri::command]
-pub fn screenshot(app: tauri::AppHandle, screen: String, preview: Option<bool>) -> Result<String, String> {
+pub async fn screenshot(app: tauri::AppHandle, screen: String, preview: Option<bool>) -> Result<String, String> {
     let idx = monitor_ord(&app, &screen);
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
     let m = monitors.get(idx).or(monitors.first()).ok_or("No monitor found")?;
@@ -703,6 +707,9 @@ pub fn set_controls_height(app: tauri::AppHandle, height: f64) -> Result<(), Str
     Ok(())
 }
 
+static DRAWING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static POLLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Transparent full-screen canvas on one monitor for live markup. NOT content protected, so
 /// strokes are part of the recording. Click-through until draw mode is turned on.
 #[tauri::command]
@@ -775,6 +782,27 @@ pub fn hide_screen_frame(app: tauri::AppHandle) {
 pub fn set_overlay_interactive(app: tauri::AppHandle, on: bool) -> Result<(), String> {
     let w = app.get_webview_window("overlay").ok_or("no overlay")?;
     w.set_ignore_cursor_events(!on).map_err(|e| e.to_string())?;
+    DRAWING.store(on, std::sync::atomic::Ordering::SeqCst);
+    if on && !POLLING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        // While drawing the overlay covers the screen. Let the mouse fall through to the control bar
+        // whenever the cursor is over it, so its buttons (and the pointer cursor) always work.
+        let app2 = app.clone();
+        std::thread::spawn(move || {
+            use std::sync::atomic::Ordering::SeqCst;
+            let mut through = false;
+            while DRAWING.load(SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                let (Some(o), Some(c)) = (app2.get_webview_window("overlay"), app2.get_webview_window("controls")) else { break };
+                let (Ok(cur), Ok(p), Ok(sz)) = (app2.cursor_position(), c.outer_position(), c.outer_size()) else { continue };
+                let inside = cur.x >= p.x as f64 && cur.x <= (p.x + sz.width as i32) as f64 && cur.y >= p.y as f64 && cur.y <= (p.y + sz.height as i32) as f64;
+                if inside != through {
+                    through = inside;
+                    let _ = o.set_ignore_cursor_events(inside);
+                }
+            }
+            POLLING.store(false, SeqCst);
+        });
+    }
     if on {
         let _ = w.set_focus(); // so Esc reaches the overlay
         // the bar must stay above the interactive overlay so it can always be clicked to leave drawing
@@ -823,7 +851,7 @@ pub struct Extracted {
 /// Cut an existing video's sound into 16 kHz mono WAV pieces of 5 minutes (what the transcript
 /// pipeline expects for uploads) and report its duration.
 #[tauri::command]
-pub fn extract_audio_segments(app: tauri::AppHandle, path: String) -> Result<Extracted, String> {
+pub async fn extract_audio_segments(app: tauri::AppHandle, path: String) -> Result<Extracted, String> {
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("uploads").join(uuid());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let out = hidden(Command::new(ffmpeg()))

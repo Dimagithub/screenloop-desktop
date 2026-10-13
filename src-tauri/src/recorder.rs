@@ -566,10 +566,58 @@ pub fn recover_parts(app: tauri::AppHandle, dir: String, audio_only: bool) -> Re
     Ok(Finished { parts, duration_seconds: clock.round() as u32 })
 }
 
+/// Position of the chosen screen in the screen list. On macOS the picker value is an avfoundation
+/// device index (cameras come first), so it is NOT the monitor number; on Windows it is the monitor index.
+fn monitor_ord(app: &tauri::AppHandle, screen: &str) -> usize {
+    #[cfg(windows)]
+    { let _ = app; screen.parse().unwrap_or(0) }
+    #[cfg(not(windows))]
+    { list_devices(app.clone()).ok().and_then(|d| d.screens.iter().position(|x| x.index == screen)).unwrap_or(0) }
+}
+
+/// The Tauri monitor for the chosen screen. macOS: match xcap's monitor by position, since the two lists can be ordered differently.
+fn tauri_monitor(app: &tauri::AppHandle, screen: &str) -> Option<tauri::Monitor> {
+    let ord = monitor_ord(app, screen);
+    let list = app.available_monitors().ok()?;
+    #[cfg(target_os = "macos")]
+    if let Some(m) = xcap::Monitor::all().ok().and_then(|v| v.into_iter().nth(ord)) {
+        let (x, y) = (m.x().unwrap_or(0), m.y().unwrap_or(0));
+        if let Some(t) = list.iter().find(|t| { let p = t.position().to_logical::<f64>(t.scale_factor()); (p.x - x as f64).abs() < 2.0 && (p.y - y as f64).abs() < 2.0 }) {
+            return Some(t.clone());
+        }
+    }
+    list.get(ord).or(list.first()).cloned()
+}
+
+// ---- macOS Screen Recording permission: without it the screen shows only the wallpaper, no windows ----
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+#[tauri::command]
+pub fn screen_access() -> bool {
+    #[cfg(target_os = "macos")]
+    unsafe { CGPreflightScreenCaptureAccess() }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
+/// Shows the macOS permission prompt (once); afterwards the user has to enable it in System Settings.
+#[tauri::command]
+pub fn request_screen_access() -> bool {
+    #[cfg(target_os = "macos")]
+    unsafe { CGRequestScreenCaptureAccess() }
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
 /// Grab a JPEG of one monitor (includes any drawn markup; excludes our protected control windows).
 #[tauri::command]
-pub fn screenshot(app: tauri::AppHandle, screen: String) -> Result<String, String> {
-    let idx: usize = screen.parse().unwrap_or(0);
+pub fn screenshot(app: tauri::AppHandle, screen: String, preview: Option<bool>) -> Result<String, String> {
+    let idx = monitor_ord(&app, &screen);
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
     let m = monitors.get(idx).or(monitors.first()).ok_or("No monitor found")?;
     let img = m.capture_image().map_err(|e| e.to_string())?;
@@ -579,7 +627,8 @@ pub fn screenshot(app: tauri::AppHandle, screen: String) -> Result<String, Strin
     let rgb = image::DynamicImage::ImageRgba8(img).to_rgb8();
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("shots");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join(format!("{}.jpg", uuid()));
+    // the live preview rewrites one file instead of piling up screenshots
+    let path = dir.join(if preview == Some(true) { "preview.jpg".to_string() } else { format!("{}.jpg", uuid()) });
     rgb.save_with_format(&path, image::ImageFormat::Jpeg).map_err(|e| e.to_string())?;
     Ok(path.to_string_lossy().into())
 }
@@ -661,9 +710,7 @@ pub async fn open_overlay(app: tauri::AppHandle, screen: String) -> Result<(), S
     if let Some(w) = app.get_webview_window("overlay") {
         return w.show().map_err(|e| e.to_string());
     }
-    let idx: usize = screen.parse().unwrap_or(0);
-    let monitors = app.available_monitors().map_err(|e| e.to_string())?;
-    let m = monitors.get(idx).or(monitors.first()).ok_or("No monitor")?;
+    let m = tauri_monitor(&app, &screen).ok_or("No monitor")?;
     let s = m.scale_factor();
     let (size, pos) = (m.size().to_logical::<f64>(s), m.position().to_logical::<f64>(s));
     let w = WebviewWindowBuilder::new(&app, "overlay", WebviewUrl::App("index.html".into()))
@@ -685,6 +732,43 @@ pub async fn open_overlay(app: tauri::AppHandle, screen: String) -> Result<(), S
         let _ = c.set_always_on_top(true);
     }
     Ok(())
+}
+
+/// Coloured frame around the chosen screen (setup only), so it is obvious which display will be recorded.
+/// Click-through and capture-protected; hidden again before recording starts.
+#[tauri::command]
+pub async fn show_screen_frame(app: tauri::AppHandle, screen: String) -> Result<(), String> {
+    let m = tauri_monitor(&app, &screen).ok_or("No monitor")?;
+    let s = m.scale_factor();
+    let (size, pos) = (m.size().to_logical::<f64>(s), m.position().to_logical::<f64>(s));
+    if let Some(w) = app.get_webview_window("frame") {
+        w.set_position(tauri::LogicalPosition::new(pos.x, pos.y)).map_err(|e| e.to_string())?;
+        w.set_size(tauri::LogicalSize::new(size.width, size.height)).map_err(|e| e.to_string())?;
+        return w.show().map_err(|e| e.to_string());
+    }
+    let w = WebviewWindowBuilder::new(&app, "frame", WebviewUrl::App("index.html".into()))
+        .title("ScreenLoop screen frame")
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .resizable(false)
+        .skip_taskbar(true)
+        .shadow(false)
+        .focused(false)
+        .content_protected(true)
+        .position(pos.x, pos.y)
+        .inner_size(size.width, size.height)
+        .build()
+        .map_err(|e| e.to_string())?;
+    let _ = w.set_ignore_cursor_events(true);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn hide_screen_frame(app: tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("frame") {
+        let _ = w.close();
+    }
 }
 
 #[tauri::command]

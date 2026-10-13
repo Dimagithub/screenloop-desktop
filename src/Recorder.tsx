@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { open as pickFiles } from "@tauri-apps/plugin-dialog";
 import { api, type ResolvedLink } from "./lib/api";
 import { SESSION_KEY } from "./Controls";
@@ -98,13 +99,21 @@ export default function Recorder({ token, link, onDone, resume, filesOnly }: { t
       .catch((e) => { setMsg(String(e)); });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Live-ish preview of the chosen screen.
+  // Preview of the chosen screen (refreshes every 3 s) and a frame on that display while setting up.
+  const [access, setAccess] = useState(true);
   useEffect(() => {
-    if (stage !== "setup" || !screen || voiceOnly) return;
+    const check = () => invoke<boolean>("screen_access").then(setAccess).catch(() => {});
+    check(); addEventListener("focus", check);
+    return () => removeEventListener("focus", check);
+  }, []);
+  useEffect(() => {
+    if (stage !== "setup" || !screen || voiceOnly) { invoke("hide_screen_frame").catch(() => {}); return; }
+    invoke("show_screen_frame", { screen }).catch(() => {});
     let gone = false;
-    invoke<string>("screenshot", { screen }).then((p) => { if (!gone) setPreviewImg(convertFileSrc(p)); }).catch(() => setPreviewImg(""));
-    return () => { gone = true; };
-  }, [screen, stage, voiceOnly]);
+    const grab = () => invoke<string>("screenshot", { screen, preview: true }).then((p) => { if (!gone) setPreviewImg(`${convertFileSrc(p)}?t=${Date.now()}`); }).catch(() => { if (!gone) setPreviewImg(""); });
+    grab(); const t = setInterval(grab, 3000);
+    return () => { gone = true; clearInterval(t); invoke("hide_screen_frame").catch(() => {}); };
+  }, [screen, stage, voiceOnly, access]);
 
   useEffect(() => {
     const un = listen<Comment>("comment-added", (e) => setComments((c) => [...c, e.payload]));
@@ -293,7 +302,15 @@ export default function Recorder({ token, link, onDone, resume, filesOnly }: { t
       <div className="setup">
         <div className="left">
           <div className="preview">
-            {voiceOnly ? <span className="muted">Voice only: your screen is not recorded.</span>
+            {!access && !voiceOnly ? (
+              <div className="sendbox" style={{ maxWidth: 360 }}>
+                <b>Allow ScreenLoop to see your screen</b>
+                <span className="muted">Without this, macOS shows only your wallpaper and the recording would have no windows in it.</span>
+                <button className="btn lime" onClick={() => invoke("request_screen_access")}>Allow screen recording</button>
+                <button className="linkbtn" onClick={() => openUrl("x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")}>Open System Settings</button>
+                <span className="muted" style={{ fontSize: 12 }}>After switching it on, quit and reopen ScreenLoop.</span>
+              </div>
+            ) : voiceOnly ? <span className="muted">Voice only: your screen is not recorded.</span>
               : previewImg ? <img src={previewImg} alt="Selected screen" style={{ width: "78%", borderRadius: 10, border: "1px solid #3d4541" }} /> : <div className="screen" />}
             {!voiceOnly && <span className="pill">{screens.find((s) => s.index === screen)?.name ?? "No screen found"}</span>}
           </div>

@@ -293,7 +293,17 @@ impl Session {
         if let Some(stdin) = c.child.stdin.as_mut() {
             let _ = stdin.write_all(b"q"); // graceful: lets ffmpeg finalize the files
         }
-        let _ = c.child.wait();
+        // ffmpeg ignores "q" while it waits for a frame (macOS screen capture is idle on a still screen), so never wait forever.
+        // ponytail: parts are fragmented MP4, so killing after the grace period still leaves a playable file.
+        let t = Instant::now();
+        while matches!(c.child.try_wait(), Ok(None)) {
+            if t.elapsed() > std::time::Duration::from_secs(3) {
+                let _ = c.child.kill();
+                let _ = c.child.wait();
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         let sys = c.sys.take().map(|x| x.stop());
         let mut n = c.first_part;
         while main_file(&self.dir, n, self.audio_only).exists() {

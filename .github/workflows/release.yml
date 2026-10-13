@@ -38,8 +38,15 @@ jobs:
           gh release download ffmpeg-7.1.1-1 -R ${{ github.repository }} -p "ffmpeg-$T$X" -p "ffmpeg-$T$X.sha256"
           sha256sum -c "ffmpeg-$T$X.sha256" 2>/dev/null || shasum -a 256 -c "ffmpeg-$T$X.sha256"
           chmod +x "ffmpeg-$T$X"
+      - name: Set up macOS signing
+        if: matrix.platform == 'macos-latest'
+        run: bash .github/scripts/mac-sign-setup.sh
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PW: ${{ secrets.MACOS_CERT_PW }}
       - uses: tauri-apps/tauri-action@v0
         env:
+          APPLE_SIGNING_IDENTITY: ${{ matrix.platform == 'macos-latest' && 'ScreenLoop Self-Signed' || '' }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""

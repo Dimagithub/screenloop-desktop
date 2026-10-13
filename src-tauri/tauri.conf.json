@@ -3,6 +3,7 @@
   "productName": "ScreenLoop",
   "version": "0.1.9",
   "identifier": "com.devcom.screenloop",
+  "mainBinaryName": "ScreenLoop",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",

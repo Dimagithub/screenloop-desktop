@@ -45,6 +45,7 @@
     ],
     "createUpdaterArtifacts": true,
     "category": "Productivity",
+    "macOS": { "entitlements": "Entitlements.plist" },
     "externalBin": [
       "binaries/ffmpeg"
     ]

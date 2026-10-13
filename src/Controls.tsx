@@ -30,12 +30,14 @@ export default function Controls() {
   const [color, setColor] = useState(COLORS[0]!);
   const [shot, setShot] = useState<{ path: string; at: number } | null>(null);
   const [text, setText] = useState("");
+  const [stopping, setStopping] = useState(false);
   const pausedForComment = useRef(false);
   const overlayOpen = useRef(false);
 
   useEffect(() => { document.documentElement.style.background = "transparent"; document.body.style.background = "transparent"; }, []);
+  const busy = useRef(false);
   useEffect(() => {
-    const t = setInterval(() => invoke<typeof st>("recording_state").then(setSt).catch(() => {}), 400);
+    const t = setInterval(() => { if (!busy.current) invoke<typeof st>("recording_state").then(setSt).catch(() => {}); }, 400);
     return () => clearInterval(t);
   }, []);
 
@@ -64,8 +66,14 @@ export default function Controls() {
   const heights: Record<string, number> = { draw: 64, comment: 270, prompts: Math.min(60 + session.prompts.length * 34, 260) };
   useEffect(() => { invoke("set_controls_height", { height: 72 + (panel ? heights[panel]! + 8 : 0) }).catch(() => {}); }, [panel]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const togglePause = () => (st.paused ? invoke("resume_recording") : invoke("pause_recording"));
-  const toggleMute = () => invoke("set_mute", { muted: !st.muted });
+  // Flip the button at once; the backend (restarting ffmpeg) catches up, then the real state is read back.
+  const act = async (patch: Partial<typeof st>, cmd: string, args?: Record<string, unknown>) => {
+    busy.current = true; setSt((s) => ({ ...s, ...patch }));
+    try { await invoke(cmd, args); } catch { /* state is re-read below */ }
+    busy.current = false; invoke<typeof st>("recording_state").then(setSt).catch(() => {});
+  };
+  const togglePause = () => act({ paused: !st.paused }, st.paused ? "resume_recording" : "pause_recording");
+  const toggleMute = () => act({ muted: !st.muted }, "set_mute", { muted: !st.muted });
 
   const setDraw = async (on: boolean) => {
     if (on && !overlayOpen.current) { await invoke("open_overlay", { screen: session.screen }); overlayOpen.current = true; }
@@ -135,7 +143,7 @@ export default function Controls() {
         <Btn label={st.muted ? "Unmute" : "Mute"} icon={st.muted ? "M3 3l18 18|M9 9v3a3 3 0 0 0 5.1 2.1|M15 9.3V6a3 3 0 0 0-5.7-1.3|M5 11a7 7 0 0 0 11.5 5.4M19 11a7 7 0 0 1-.9 3.4M12 18v3" : "M9 3h6v12H9Z|M5 11a7 7 0 0 0 14 0M12 18v3"} on={st.muted} onClick={toggleMute} disabled={!session.hasMic || panel === "comment"} title={session.hasMic ? "" : "No microphone selected"} />
         {session.prompts.length > 0 && <Btn label="Prompts" icon="M9 6h11M9 12h11M9 18h11|m3.5 6 1 1 2-2" on={panel === "prompts"} onClick={() => setPanel(panel === "prompts" ? null : "prompts")} />}
         <div className="grow" />
-        <button className="stop" onClick={() => emit("controls-stop")}><i />Stop</button>
+        <button className="stop" disabled={stopping} onClick={() => { setStopping(true); emit("controls-stop"); }}><i />{stopping ? "Stopping…" : "Stop"}</button>
       </div>
     </div>
   );

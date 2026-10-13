@@ -297,12 +297,12 @@ impl Session {
         // ponytail: parts are fragmented MP4, so killing after the grace period still leaves a playable file.
         let t = Instant::now();
         while matches!(c.child.try_wait(), Ok(None)) {
-            if t.elapsed() > std::time::Duration::from_secs(3) {
+            if t.elapsed() > std::time::Duration::from_millis(500) {
                 let _ = c.child.kill();
                 let _ = c.child.wait();
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            std::thread::sleep(std::time::Duration::from_millis(15));
         }
         let sys = c.sys.take().map(|x| x.stop());
         let mut n = c.first_part;

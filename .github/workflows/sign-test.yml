@@ -1,0 +1,15 @@
+name: Sign test
+on: workflow_dispatch
+jobs:
+  t:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash .github/scripts/mac-sign-setup.sh
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PW: ${{ secrets.MACOS_CERT_PW }}
+      - run: |
+          cp /bin/ls "$RUNNER_TEMP/x"
+          codesign -s "ScreenLoop Self-Signed" -f "$RUNNER_TEMP/x"
+          codesign -dr - "$RUNNER_TEMP/x"

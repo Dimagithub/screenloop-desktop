@@ -76,6 +76,19 @@ function UpdateLink() {
   return <><button className="linkbtn" onClick={run}>Check for updates</button>{msg && <span>{msg}</span>}</>;
 }
 
+/** Checks on launch and offers the update right on the first screen, even before permissions are set up. */
+function UpdateBanner() {
+  const [v, setV] = useState<string | null>(null);
+  const [msg, setMsg] = useState("");
+  useEffect(() => { check().then((u) => setV(u?.version ?? null)).catch(() => {}); }, []);
+  if (!v) return null;
+  const run = async () => {
+    setMsg("Downloading…");
+    try { const u = await check(); await u?.downloadAndInstall(); await relaunch(); } catch (e) { setMsg(String(e)); }
+  };
+  return <div className="card" style={{ margin: "8px 20px 0", display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between" }}><span><b>ScreenLoop {v} is available.</b> <span className="muted">{msg || `You have ${__APP_VERSION__}.`}</span></span><button className="btn lime" style={{ height: 34, fontSize: 13 }} onClick={run} disabled={!!msg && msg === "Downloading…"}>Update now</button></div>;
+}
+
 function Home({ session, lib, onOpen, onUpload, onSignIn, onAll }: { session: Session | null; lib: Library; onOpen: (r: Rec) => void; onUpload: () => void; onSignIn: () => void; onAll: () => void }) {
   const [input, setInput] = useState("");
   const [err, setErr] = useState("");
@@ -200,7 +213,7 @@ export default function App() {
   }, []);
   if (!ready || !perms.p) return null;
   // Everything must be allowed (or the microphone knowingly skipped) before the app is usable.
-  if (!rec && !(perms.p.screen && (perms.p.mic || micSkipped))) return <div className="app"><div className="topbar"><div className="brand"><div className="logo"><i /></div>ScreenLoop</div></div><Permissions screen={perms.p.screen} mic={perms.p.mic} onContinue={() => { setMicSkipped(true); try { localStorage.setItem("sl-mic-skipped", "1"); } catch { /* ignore */ } }} /></div>;
+  if (!rec && !(perms.p.screen && (perms.p.mic || micSkipped))) return <div className="app"><div className="topbar"><div className="brand"><div className="logo"><i /></div>ScreenLoop</div></div><UpdateBanner /><Permissions screen={perms.p.screen} mic={perms.p.mic} onContinue={() => { setMicSkipped(true); try { localStorage.setItem("sl-mic-skipped", "1"); } catch { /* ignore */ } }} /><div className="footer">Version {__APP_VERSION__} · <UpdateLink /></div></div>;
   if (upload) return <div className="app"><div className="topbar"><div className="brand"><div className="logo"><i /></div>ScreenLoop</div></div><UploadVideo onDone={() => setUpload(false)} /></div>;
   if (rec) return <div className="app"><Recorder key={rec.resume?.dir ?? rec.token} token={rec.token} link={rec.link} resume={rec.resume} filesOnly={rec.filesOnly} onDone={() => setRec(null)} /></div>;
   return (
@@ -211,6 +224,7 @@ export default function App() {
           ? <div style={{ display: "flex", alignItems: "center", gap: 12 }}><span className="muted">{session.user.email}</span><div className="avatar">{(session.user.email ?? "?").slice(0, 2).toUpperCase()}</div><button className="linkbtn" onClick={() => supabase.auth.signOut()}>Sign out</button></div>
           : <button className="linkbtn" onClick={() => setSignIn(true)}>Sign in</button>}
       </div>
+      <UpdateBanner />
       {all && session ? <Recordings lib={lib} onBack={() => setAll(false)} /> : signIn && !session ? <div className="page" style={{ justifyContent: "center" }}><SignIn onBack={() => setSignIn(false)} /></div> : <Home session={session} lib={lib} onOpen={setRec} onUpload={() => setUpload(true)} onSignIn={() => setSignIn(true)} onAll={() => setAll(true)} />}
       <div className="footer">Version {__APP_VERSION__} · <UpdateLink /></div>
     </div>

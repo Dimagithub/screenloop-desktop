@@ -36,9 +36,9 @@ button { cursor: pointer; }
 .rec-dot { width: 18px; height: 18px; border-radius: 50%; background: var(--red); }
 .joinbar { display: flex; gap: 10px; width: 100%; max-width: 760px; }
 .input { flex: 1; height: 48px; border-radius: 12px; border: 1px solid var(--border); background: var(--card); padding: 0 16px; font-size: 15px; min-width: 0; }
-.btn { height: 48px; padding: 0 22px; border-radius: 12px; border: 0; background: var(--surface); font-weight: 700; }
+.btn { flex: none; font-family: inherit; height: 48px; padding: 0 22px; border-radius: 12px; border: 0; background: var(--surface); font-weight: 700; }
 .btn:disabled { opacity: .5; cursor: default; }
-.btn.lime { background: var(--lime); color: var(--lime-ink); font-family: "Space Grotesk", sans-serif; font-size: 17px; }
+.btn.lime { background: var(--lime); color: var(--lime-ink); font-family: "Space Grotesk", "DM Sans", sans-serif; font-size: 17px; }
 .btn.big { height: 56px; border-radius: 16px; width: 100%; font-size: 18px; display: flex; align-items: center; justify-content: center; gap: 12px; }
 .btn.danger { background: var(--red); color: #fff; }
 .err { color: #ff8a8d; font-size: 14px; margin: 0; }
@@ -99,6 +99,8 @@ textarea.input { height: 90px; padding: 10px 12px; resize: none; }
 .rng::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 8px; height: 26px; border-radius: 4px; background: var(--lime); cursor: ew-resize; border: 0; }
 .rng::-moz-range-thumb { pointer-events: auto; width: 8px; height: 26px; border-radius: 4px; background: var(--lime); border: 0; }
 .rng::-webkit-slider-runnable-track { background: transparent; } 
+.ctl .time { flex-direction: column; align-items: flex-start; gap: 0; justify-content: center; }
+.ctl .scrno { font: 600 10px "DM Sans", sans-serif; color: var(--muted); margin-left: 16px; }
 .ctl .warn { margin-left: 8px; font: 700 11px "DM Sans", sans-serif; color: var(--amber); }
 .count { font: 700 120px "Space Grotesk", sans-serif; color: var(--lime); line-height: 1; }
 .check { display: flex; align-items: center; gap: 8px; font-size: 13px; } .check input { accent-color: var(--lime); width: 16px; height: 16px; }

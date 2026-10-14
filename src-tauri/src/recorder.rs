@@ -830,6 +830,10 @@ pub fn set_overlay_interactive(app: tauri::AppHandle, on: bool) -> Result<(), St
                 if inside != through {
                     through = inside;
                     let _ = o.set_ignore_cursor_events(inside);
+                    if !inside {
+                        // Leaving the bar: make the overlay the active window so the crosshair shows and the first click draws.
+                        let _ = o.set_focus();
+                    }
                 }
             }
             POLLING.store(false, SeqCst);

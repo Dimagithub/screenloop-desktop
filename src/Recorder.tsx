@@ -157,7 +157,8 @@ export default function Recorder({ token, link, onDone, resume, filesOnly }: { t
     } catch (e) {
       await invoke("close_controls");
       await getCurrentWindow().unminimize();
-      setMsg(String(e)); setStage("setup");
+      // Keep the comments and notes: land on the review page (without video) instead of throwing them away.
+      setDone(null); setMsg(String(e)); setStage("review");
     } finally { stopping.current = false; }
   };
   useEffect(() => {
@@ -178,7 +179,7 @@ export default function Recorder({ token, link, onDone, resume, filesOnly }: { t
   const begin = async () => {
     const [h, fps] = QUALITY[quality];
     try {
-      localStorage.setItem(SESSION_KEY, JSON.stringify({ prompts: link.prompts ?? [], screen, hasMic: !!mic, voiceOnly, maxSeconds: (link.maxDurationMin ?? 0) * 60 }));
+      localStorage.setItem(SESSION_KEY, JSON.stringify({ prompts: link.prompts ?? [], screen, screenNo: screens.findIndex((d) => d.index === screen) + 1, hasMic: !!mic, voiceOnly, maxSeconds: (link.maxDurationMin ?? 0) * 60 }));
       dirRef.current = await invoke<string>("start_recording", { screen, mic: mic || null, audioOnly: voiceOnly, systemAudio: sysAudio, height: h, fps, chunkSeconds: chunk });
       persist();
       await invoke("open_controls");

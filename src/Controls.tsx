@@ -3,7 +3,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-export interface LiveSession { prompts: string[]; screen: string; hasMic: boolean; voiceOnly: boolean; maxSeconds: number }
+export interface LiveSession { prompts: string[]; screen: string; screenNo?: number; hasMic: boolean; voiceOnly: boolean; maxSeconds: number }
 export const SESSION_KEY = "sl-session";
 export type Tool = "pen" | "arrow" | "box" | "highlight";
 const COLORS = ["#ff4d4f", "#ffd23f", "#b9e84b", "#4da3ff"];
@@ -30,6 +30,7 @@ export default function Controls() {
   const [color, setColor] = useState(COLORS[0]!);
   const [shot, setShot] = useState<{ path: string; at: number } | null>(null);
   const [text, setText] = useState("");
+  const [saved, setSaved] = useState<{ at: number; body: string }[]>([]);
   const [stopping, setStopping] = useState(false);
   const overlayOpen = useRef(false);
 
@@ -51,7 +52,7 @@ export default function Controls() {
     return () => { un.then((f) => f()); };
   }, []);
 
-  const heights: Record<string, number> = { draw: 64, comment: 270, prompts: Math.min(60 + session.prompts.length * 34, 260) };
+  const heights: Record<string, number> = { draw: 64, comment: 270 + (saved.length ? Math.min(saved.length, 3) * 20 + 8 : 0), prompts: Math.min(60 + session.prompts.length * 34, 260) };
   useEffect(() => { invoke("set_controls_height", { height: 72 + (panel ? heights[panel]! + 8 : 0) }).catch(() => {}); }, [panel]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Flip the button at once; the backend (restarting ffmpeg) catches up, then the real state is read back.
@@ -85,6 +86,7 @@ export default function Controls() {
   };
   // A comment exists only if the user presses Save.
   const closeComment = (save: boolean) => {
+    if (save && text.trim()) setSaved((l) => [...l, { at: shot?.at ?? st.elapsed, body: text.trim() }]);
     if (save && text.trim()) emit("comment-added", { id: crypto.randomUUID(), at: shot?.at ?? st.elapsed, body: text.trim(), shot: shot?.path || null });
     setPanel(null); setShot(null);
   };
@@ -107,6 +109,7 @@ export default function Controls() {
       )}
       {panel === "comment" && (
         <div className="tray col" style={{ height: heights.comment }}>
+          {saved.length > 0 && <div style={{ maxHeight: 62, overflowY: "auto", fontSize: 12, lineHeight: "20px", color: "var(--muted)" }}>{saved.map((c, i) => <div key={i} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}><span style={{ color: "var(--amber)" }}>{mmss(c.at)}</span> {c.body}</div>)}</div>}
           {shot?.path && <img src={convertFileSrc(shot.path)} alt="Frozen screen" className="shot" />}
           <textarea autoFocus className="cin" placeholder="What do you want to say about this?" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) closeComment(true); }} />
           <div className="crow"><button className="tb txt" onClick={() => closeComment(false)}>Cancel</button><button className="save" onClick={() => closeComment(true)}>Save comment</button></div>
@@ -119,7 +122,7 @@ export default function Controls() {
         </div>
       )}
       <div className="ctl">
-        <div className="time"><i className={`live ${st.paused ? "off" : ""}`} />{mmss(st.elapsed)}{left !== null && left <= 60 && <span className="warn">{Math.ceil(left)}s left</span>}</div>
+        <div className="time"><i className={`live ${st.paused ? "off" : ""}`} />{mmss(st.elapsed)}{left !== null && left <= 60 && <span className="warn">{Math.ceil(left)}s left</span>}{!session.voiceOnly && session.screenNo && <small className="scrno">Screen {session.screenNo}</small>}</div>
         <Btn label={st.paused ? "Resume" : "Pause"} icon={st.paused ? "M8 5v14l11-7Z" : "M6 5h4v14H6Z|M14 5h4v14h-4Z"} onClick={togglePause} />
         {!session.voiceOnly && <Btn label="Draw" icon="M12 20h9|M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" on={panel === "draw"} onClick={openDraw} />}
         <Btn label="Comment" icon="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12Z" on={panel === "comment"} onClick={openComment} />

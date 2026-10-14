@@ -264,9 +264,10 @@ impl Session {
         #[cfg(target_os = "macos")]
         {
             let input = format!("{}:{}", self.screen, mic.as_deref().unwrap_or("none"));
-            cmd.args(["-f", "avfoundation", "-capture_cursor", "1", "-framerate", &fps.to_string(), "-i", &input]);
+            // wallclock stamps + constant frame rate: avfoundation's own stamps produced frame-counter pts (46k frames in 0.06 s, unplayable)
+            cmd.args(["-use_wallclock_as_timestamps", "1", "-f", "avfoundation", "-capture_cursor", "1", "-framerate", &fps.to_string(), "-i", &input]);
             audio_in = 0;
-            vf = format!("scale=-2:{height}");
+            vf = format!("fps={fps},scale=-2:{height}");
             venc = ["-c:v", "h264_videotoolbox", "-realtime", "1"].map(String::from).to_vec();
         }
         #[cfg(windows)]
@@ -750,7 +751,8 @@ const BAR_H: f64 = 72.0;
 const BAR_MARGIN: f64 = 48.0;
 
 fn bar_pos(app: &tauri::AppHandle, h: f64) -> Option<(f64, f64)> {
-    let m = app.primary_monitor().ok()??;
+    // the monitor the main window is on (primary only as a fallback), so the bar does not jump to another screen
+    let m = app.get_webview_window("main").and_then(|w| w.current_monitor().ok().flatten()).or_else(|| app.primary_monitor().ok().flatten())?;
     let s = m.scale_factor();
     let size = m.size().to_logical::<f64>(s);
     let pos = m.position().to_logical::<f64>(s);

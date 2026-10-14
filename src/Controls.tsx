@@ -31,7 +31,6 @@ export default function Controls() {
   const [shot, setShot] = useState<{ path: string; at: number } | null>(null);
   const [text, setText] = useState("");
   const [stopping, setStopping] = useState(false);
-  const pausedForComment = useRef(false);
   const overlayOpen = useRef(false);
 
   useEffect(() => { document.documentElement.style.background = "transparent"; document.body.style.background = "transparent"; }, []);
@@ -46,22 +45,11 @@ export default function Controls() {
   const stopped = useRef(false);
   useEffect(() => { if (left === 0 && !stopped.current) { stopped.current = true; emit("controls-stop"); } }, [left]);
 
-  // Draw to comment: a finished markup stroke becomes a comment with its own screenshot (debounced).
-  const strokeTimer = useRef<number>(0);
+  // A finished stroke only raises the bar above the overlay; it is never turned into a comment on its own.
   useEffect(() => {
-    const un = listen("stroke-done", () => {
-      invoke("raise_controls").catch(() => {});
-      clearTimeout(strokeTimer.current);
-      strokeTimer.current = window.setTimeout(async () => {
-        try {
-          const at = (await invoke<{ elapsed: number }>("recording_state")).elapsed;
-          const path = await invoke<string>("screenshot", { screen: session.screen });
-          emit("comment-added", { id: crypto.randomUUID(), at, body: "Marked on screen", shot: path });
-        } catch { /* recording may have stopped */ }
-      }, 1500);
-    });
-    return () => { un.then((f) => f()); clearTimeout(strokeTimer.current); };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    const un = listen("stroke-done", () => { invoke("raise_controls").catch(() => {}); });
+    return () => { un.then((f) => f()); };
+  }, []);
 
   const heights: Record<string, number> = { draw: 64, comment: 270, prompts: Math.min(60 + session.prompts.length * 34, 260) };
   useEffect(() => { invoke("set_controls_height", { height: 72 + (panel ? heights[panel]! + 8 : 0) }).catch(() => {}); }, [panel]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -88,22 +76,17 @@ export default function Controls() {
   const openDraw = () => { if (panel === "draw") { setPanel(null); setDraw(false); } else { setPanel("draw"); setDraw(true); } };
   useEffect(() => { if (drawOn) { emit("draw-tool", { tool, color }); invoke("raise_controls").catch(() => {}); } }, [tool, color, drawOn]);
 
-  const openComment = async () => {
+  // Opens at once; the recording keeps running (audio included) and the screenshot arrives a moment later.
+  const openComment = () => {
     if (panel === "comment") return;
-    if (drawOn) await setDraw(false);
-    const wasPaused = st.paused;
-    if (!wasPaused) { await invoke("pause_recording"); pausedForComment.current = true; }
-    try {
-      const at = (await invoke<typeof st>("recording_state")).elapsed;
-      const path = session.voiceOnly ? "" : await invoke<string>("screenshot", { screen: session.screen });
-      setShot({ path, at });
-    } catch { setShot(null); }
-    setText(""); setPanel("comment");
+    if (drawOn) setDraw(false);
+    setShot({ path: "", at: st.elapsed }); setText(""); setPanel("comment");
+    if (!session.voiceOnly) invoke<string>("screenshot", { screen: session.screen }).then((path) => setShot((x) => (x ? { ...x, path } : x))).catch(() => {});
   };
-  const closeComment = async (save: boolean) => {
+  // A comment exists only if the user presses Save.
+  const closeComment = (save: boolean) => {
     if (save && text.trim()) emit("comment-added", { id: crypto.randomUUID(), at: shot?.at ?? st.elapsed, body: text.trim(), shot: shot?.path || null });
     setPanel(null); setShot(null);
-    if (pausedForComment.current) { pausedForComment.current = false; await invoke("resume_recording"); }
   };
 
   const Btn = ({ label, icon, on, onClick, disabled, title }: { label: string; icon: string; on?: boolean; onClick: () => void; disabled?: boolean; title?: string }) => (
@@ -137,10 +120,10 @@ export default function Controls() {
       )}
       <div className="ctl">
         <div className="time"><i className={`live ${st.paused ? "off" : ""}`} />{mmss(st.elapsed)}{left !== null && left <= 60 && <span className="warn">{Math.ceil(left)}s left</span>}</div>
-        <Btn label={st.paused ? "Resume" : "Pause"} icon={st.paused ? "M8 5v14l11-7Z" : "M6 5h4v14H6Z|M14 5h4v14h-4Z"} onClick={togglePause} disabled={panel === "comment"} />
+        <Btn label={st.paused ? "Resume" : "Pause"} icon={st.paused ? "M8 5v14l11-7Z" : "M6 5h4v14H6Z|M14 5h4v14h-4Z"} onClick={togglePause} />
         {!session.voiceOnly && <Btn label="Draw" icon="M12 20h9|M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" on={panel === "draw"} onClick={openDraw} />}
         <Btn label="Comment" icon="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12Z" on={panel === "comment"} onClick={openComment} />
-        <Btn label={st.muted ? "Unmute" : "Mute"} icon={st.muted ? "M3 3l18 18|M9 9v3a3 3 0 0 0 5.1 2.1|M15 9.3V6a3 3 0 0 0-5.7-1.3|M5 11a7 7 0 0 0 11.5 5.4M19 11a7 7 0 0 1-.9 3.4M12 18v3" : "M9 3h6v12H9Z|M5 11a7 7 0 0 0 14 0M12 18v3"} on={st.muted} onClick={toggleMute} disabled={!session.hasMic || panel === "comment"} title={session.hasMic ? "" : "No microphone selected"} />
+        <Btn label={st.muted ? "Unmute" : "Mute"} icon={st.muted ? "M3 3l18 18|M9 9v3a3 3 0 0 0 5.1 2.1|M15 9.3V6a3 3 0 0 0-5.7-1.3|M5 11a7 7 0 0 0 11.5 5.4M19 11a7 7 0 0 1-.9 3.4M12 18v3" : "M9 3h6v12H9Z|M5 11a7 7 0 0 0 14 0M12 18v3"} on={st.muted} onClick={toggleMute} disabled={!session.hasMic} title={session.hasMic ? "" : "No microphone selected"} />
         {session.prompts.length > 0 && <Btn label="Prompts" icon="M9 6h11M9 12h11M9 18h11|m3.5 6 1 1 2-2" on={panel === "prompts"} onClick={() => setPanel(panel === "prompts" ? null : "prompts")} />}
         <div className="grow" />
         <button className="stop" disabled={stopping} onClick={() => { setStopping(true); emit("controls-stop"); }}><i />{stopping ? "Stopping…" : "Stop"}</button>

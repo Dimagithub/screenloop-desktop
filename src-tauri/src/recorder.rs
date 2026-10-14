@@ -172,8 +172,8 @@ fn main_file(dir: &std::path::Path, n: u32, audio_only: bool) -> PathBuf {
 fn make_part(dir: &std::path::Path, n: u32, audio_only: bool, with_audio: bool, start: f64, dur: f64) -> Option<Part> {
     let path = main_file(dir, n, audio_only);
     let meta = std::fs::metadata(&path).ok()?;
-    if dur < 1.0 {
-        return None; // too short to be playable
+    if dur < 1.0 || meta.len() < 1024 {
+        return None; // too short to be playable, or ffmpeg left only a header (a pause/resume right after a cut)
     }
     let side = dir.join(format!("p{n}.audio.webm"));
     let audio_path = if audio_only {

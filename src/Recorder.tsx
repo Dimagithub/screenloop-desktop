@@ -251,7 +251,7 @@ export default function Recorder({ token, link, onDone, resume, filesOnly }: { t
 
   const title = (
     <div className="topbar">
-      <div className="brand">{(stage === "setup" || (stage === "review" && (resume || noMedia))) && <button className="linkbtn" onClick={onDone}>‹ Back</button>}<span>{link.title}</span>{link.sender && <span className="muted">from {link.sender.name}</span>}</div>
+      <div className="brand">{(stage === "setup" || stage === "review") && <button className="linkbtn" onClick={onDone}>‹ Back</button>}<span>{link.title}</span>{link.sender && <span className="muted">from {link.sender.name}</span>}</div>
       {done && stage === "review" && <span className="chip">Recorded {fmt(done.duration_seconds)} · {comments.length} comment{comments.length === 1 ? "" : "s"}</span>}
     </div>
   );
@@ -276,7 +276,11 @@ export default function Recorder({ token, link, onDone, resume, filesOnly }: { t
           {comments.map((c) => (
             <div className="row" key={c.id}>
               {c.shot ? <img className="thumb" style={{ objectFit: "cover" }} src={convertFileSrc(c.shot)} alt="" /> : <div className="thumb" />}
-              <div className="meta"><b style={{ fontSize: 13 }}>{done && <span style={{ color: "var(--amber)" }}>{fmt(c.at)} </span>}{c.body}</b></div>
+              <div className="meta" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                {done && <b style={{ fontSize: 13, color: "var(--amber)" }}>{fmt(c.at)}</b>}
+                <input className="input" style={{ height: 32, fontSize: 13, flex: 1 }} aria-label="Edit comment" value={c.body}
+                  onChange={(e) => setComments((l) => l.map((x) => x.id === c.id ? { ...x, body: e.target.value } : x))} />
+              </div>
               <button className="linkbtn" aria-label="Remove comment" onClick={() => setComments((l) => l.filter((x) => x.id !== c.id))}>✕</button>
             </div>
           ))}

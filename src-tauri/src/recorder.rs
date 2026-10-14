@@ -650,7 +650,29 @@ pub async fn screenshot(app: tauri::AppHandle, screen: String, preview: Option<b
 /// PUT a local file to a Supabase signed upload URL (streamed, not buffered).
 #[tauri::command]
 pub async fn upload_file(path: String, url: String, content_type: String) -> Result<(), String> {
-    let file = tokio::fs::File::open(&path).await.map_err(|e| e.to_string())?;
+    // Recorded parts are fragmented MP4 (crash-safe) with no duration or seek index, so browsers cannot seek them
+    // (trimmed recordings would not play). Remux to a regular MP4 with the index up front; keep the original if that fails.
+    let mut path = path;
+    let mut temp = None;
+    if content_type == "video/mp4" {
+        let (src, dst) = (path.clone(), format!("{path}.web.mp4"));
+        let ok = tokio::task::spawn_blocking(move || {
+            hidden(Command::new(ffmpeg())).args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-i", &src, "-c", "copy", "-movflags", "+faststart", &dst]).status().map(|s| s.success()).unwrap_or(false)
+        }).await.unwrap_or(false);
+        if ok {
+            temp = Some(format!("{path}.web.mp4"));
+            path = format!("{path}.web.mp4");
+        }
+    }
+    let r = put_file(&path, url, content_type).await;
+    if let Some(t) = temp {
+        let _ = std::fs::remove_file(t);
+    }
+    r
+}
+
+async fn put_file(path: &str, url: String, content_type: String) -> Result<(), String> {
+    let file = tokio::fs::File::open(path).await.map_err(|e| e.to_string())?;
     let len = file.metadata().await.map_err(|e| e.to_string())?.len();
     let body = reqwest::Body::wrap_stream(tokio_util::io::ReaderStream::new(file));
     let res = reqwest::Client::new().put(url).header("content-type", content_type).header("content-length", len).body(body).send().await.map_err(|e| e.to_string())?;

@@ -11,7 +11,7 @@ import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 import Recorder, { type Manifest } from "./Recorder";
 import UploadVideo from "./UploadVideo";
 import Permissions, { usePermissions } from "./Permissions";
-import Recordings, { useLibrary, type Library } from "./Recordings";
+import Recordings, { useLibrary, statusLabel, type Library } from "./Recordings";
 
 type Rec = { token: string; link: ResolvedLink; filesOnly?: boolean; resume?: { dir: string; manifest: Manifest } };
 interface Unsent { dir: string; manifest: string }
@@ -171,7 +171,7 @@ function Home({ session, lib, onOpen, onUpload, onSignIn, onAll }: { session: Se
             <div className="row" key={r.id} onClick={onAll} style={{ cursor: "pointer" }}>
               <div className="thumb" />
               <div className="meta"><b>{r.title}</b><span className="muted">{new Date(r.created_at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })} · {Math.max(1, Math.round((r.duration_seconds ?? 0) / 60))} min</span></div>
-              {(() => { const n = lib.docs.filter((d) => d.submission_id === r.id && lib.isNew(d.id)).length; return <span className={`chip ${n || r.transcript_status === "done" ? "ok" : "wait"}`}>{n ? `${n} new document${n > 1 ? "s" : ""}` : r.transcript_status === "done" ? "Document ready" : "Processing"}</span>; })()}
+              {(() => { const n = lib.docs.filter((d) => d.submission_id === r.id && lib.isNew(d.id)).length; return <span className={`chip ${n || r.transcript_status === "done" ? "ok" : "wait"}`}>{n ? `${n} new document${n > 1 ? "s" : ""}` : r.transcript_status === "done" ? "Document ready" : statusLabel(r.transcript_status)}</span>; })()}
             </div>
           ))}
         </div>

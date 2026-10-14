@@ -8,6 +8,9 @@ export interface Doc { id: string; submission_id: string; parser_name: string; c
 const SEEN = "sl-seen-docs";
 const readSeen = (): Set<string> | null => { try { const v = localStorage.getItem(SEEN); return v ? new Set(JSON.parse(v)) : null; } catch { return null; } };
 const writeSeen = (s: Set<string>) => { try { localStorage.setItem(SEEN, JSON.stringify([...s])); } catch { /* storage unavailable */ } };
+/** What the transcript status really means (anything not finished used to read "Processing"). */
+export const statusLabel = (s: string | null): string =>
+  s === "done" ? "No documents yet" : s === "failed" ? "Transcript failed" : s === "insufficient_credits" ? "Out of credits" : s === "queued" || s === "processing" ? "Processing" : "No transcript (no audio?)";
 const when = (d: string) => new Date(d).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 
 /** Recordings + generated documents; polls so new documents show up. "New" = not opened here yet. */
@@ -68,7 +71,7 @@ export default function Recordings({ lib, onBack }: { lib: Library; onBack: () =
           <div className="card" key={r.id} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
               <div className="meta" style={{ flex: 1 }}><b>{r.title}</b><span className="muted">{when(r.created_at)}{r.duration_seconds ? ` · ${Math.max(1, Math.round(r.duration_seconds / 60))} min` : ""}</span></div>
-              {rd.length === 0 && <span className="chip wait">{r.transcript_status === "done" ? "No documents yet" : "Processing"}</span>}
+              {rd.length === 0 && <span className="chip wait">{statusLabel(r.transcript_status)}</span>}
               <button className="linkbtn" onClick={() => openUrl(`${import.meta.env.VITE_WEB_URL}/submissions/${r.id}`)}>Review on web</button>
             </div>
             {rd.map((d) => (

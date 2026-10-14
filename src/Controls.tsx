@@ -74,6 +74,13 @@ export default function Controls() {
     const un = listen("draw-exit", () => { setPanel((p) => (p === "draw" ? null : p)); setDraw(false); });
     return () => { un.then((f) => f()); };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Esc while the bar has focus (the overlay handles it when it has focus): leave drawing and close the tools panel.
+  useEffect(() => {
+    if (!drawOn && panel !== "draw") return;
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") { setPanel((p) => (p === "draw" ? null : p)); setDraw(false); } };
+    addEventListener("keydown", key);
+    return () => removeEventListener("keydown", key);
+  }, [drawOn, panel]); // eslint-disable-line react-hooks/exhaustive-deps
   const openDraw = () => { if (panel === "draw") { setPanel(null); setDraw(false); } else { setPanel("draw"); setDraw(true); } };
   useEffect(() => { if (drawOn) { emit("draw-tool", { tool, color }); invoke("raise_controls").catch(() => {}); } }, [tool, color, drawOn]);
 
@@ -122,7 +129,7 @@ export default function Controls() {
         </div>
       )}
       <div className="ctl">
-        <div className="time"><i className={`live ${st.paused ? "off" : ""}`} />{mmss(st.elapsed)}{left !== null && left <= 60 && <span className="warn">{Math.ceil(left)}s left</span>}{!session.voiceOnly && session.screenNo && <small className="scrno">Screen {session.screenNo}</small>}</div>
+        <div className="time"><i className={`live ${st.paused ? "off" : ""}`} /><span className="tcol"><span>{mmss(st.elapsed)}{left !== null && left <= 60 && <span className="warn">{Math.ceil(left)}s left</span>}</span>{!session.voiceOnly && session.screenNo && <small className="scrno">Screen {session.screenNo}</small>}</span></div>
         <Btn label={st.paused ? "Resume" : "Pause"} icon={st.paused ? "M8 5v14l11-7Z" : "M6 5h4v14H6Z|M14 5h4v14h-4Z"} onClick={togglePause} />
         {!session.voiceOnly && <Btn label="Draw" icon="M12 20h9|M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" on={panel === "draw"} onClick={openDraw} />}
         <Btn label="Comment" icon="M21 12a8 8 0 0 1-11.6 7.1L3 21l1.9-6.4A8 8 0 1 1 21 12Z" on={panel === "comment"} onClick={openComment} />

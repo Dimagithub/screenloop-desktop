@@ -119,6 +119,7 @@ struct Session {
     fps: u32,
     seg: u32,
     muted: bool,
+    restarts: u32,
     paused: bool,
     next_part: u32,
     clock: f64, // seconds recorded in finished runs
@@ -219,6 +220,16 @@ fn mix_into(file: &std::path::Path, sys: &SysInfo, offset: f64, dur: f64, has_au
 }
 
 impl Session {
+    /// ffmpeg's errors go to ffmpeg.log in the session folder (a GUI app has no console), so a silent failure can be explained.
+    fn errlog(&self) -> Stdio {
+        std::fs::OpenOptions::new().create(true).append(true).open(self.dir.join("ffmpeg.log")).map_or_else(|_| Stdio::inherit(), Stdio::from)
+    }
+
+    fn log_tail(&self) -> String {
+        let t = std::fs::read_to_string(self.dir.join("ffmpeg.log")).unwrap_or_default();
+        t.lines().rev().take(3).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join(" | ")
+    }
+
     fn elapsed(&self) -> f64 {
         self.clock + self.cur.as_ref().map_or(0.0, |c| c.started.elapsed().as_secs_f64())
     }
@@ -244,7 +255,7 @@ impl Session {
             }
             cmd.args(["-vn", "-c:a", "libopus", "-b:a", "32k", "-f", "segment", "-segment_time", &seg, "-segment_format", "webm", "-reset_timestamps", "1", "-segment_start_number", &n])
                 .arg(self.dir.join("p%d.voice.webm"));
-            let child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
+            let child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(self.errlog()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
             let sys = self.start_sys();
             self.cur = Some(Cur { child, started: Instant::now(), first_part: self.next_part, audio: true, sys });
             return Ok(());
@@ -281,7 +292,7 @@ impl Session {
             cmd.args(["-map", &format!("{audio_in}:a"), "-vn", "-c:a", "libopus", "-b:a", "32k", "-f", "segment", "-segment_time", &seg, "-segment_format", "webm", "-reset_timestamps", "1", "-segment_start_number", &n])
                 .arg(self.dir.join("p%d.audio.webm"));
         }
-        let child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::inherit()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
+        let child = cmd.stdin(Stdio::piped()).stdout(Stdio::null()).stderr(self.errlog()).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
         let sys = self.start_sys();
         self.cur = Some(Cur { child, started: Instant::now(), first_part: self.next_part, audio, sys });
         Ok(())
@@ -410,7 +421,7 @@ pub async fn start_recording(
     }
     let dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("recordings").join(uuid());
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let mut s = Session { dir: dir.clone(), screen, mic, audio_only, system_audio, mixed: HashSet::new(), height, fps, seg: chunk_seconds.max(120), muted: false, paused: false, next_part: 1, clock: 0.0, runs: vec![], cur: None };
+    let mut s = Session { dir: dir.clone(), screen, mic, audio_only, system_audio, mixed: HashSet::new(), height, fps, seg: chunk_seconds.max(120), muted: false, restarts: 0, paused: false, next_part: 1, clock: 0.0, runs: vec![], cur: None };
     s.begin_run()?;
     *slot = Some(s);
     Ok(dir.to_string_lossy().into())
@@ -460,7 +471,17 @@ pub async fn set_mute(state: State<'_, Recorder>, muted: bool) -> Result<(), Str
 
 #[tauri::command]
 pub async fn recording_state(state: State<'_, Recorder>) -> Result<State_, String> {
-    with(&state, |s| Ok(State_ { elapsed: s.elapsed(), paused: s.paused, muted: s.muted }))
+    with(&state, |s| {
+        // ffmpeg can die on its own (encoder or capture error); start it again rather than record nothing for minutes.
+        // Also restarts a ffmpeg that is alive but has written no video after 10 s. ponytail: 5 restarts max, then it stays dead and stop reports the ffmpeg.log tail
+        let stuck = s.cur.as_ref().is_some_and(|c| c.started.elapsed().as_secs() >= 10 && std::fs::metadata(main_file(&s.dir, c.first_part, s.audio_only)).map_or(true, |m| m.len() < 1024));
+        if s.restarts < 5 && (stuck || s.cur.as_mut().is_some_and(|c| matches!(c.child.try_wait(), Ok(Some(_))))) {
+            s.restarts += 1;
+            s.end_run();
+            let _ = s.begin_run();
+        }
+        Ok(State_ { elapsed: s.elapsed(), paused: s.paused, muted: s.muted })
+    })
 }
 
 /// Parts that are final while recording continues (for background upload).
@@ -479,7 +500,8 @@ pub async fn stop_recording(state: State<'_, Recorder>) -> Result<Finished, Stri
     s.mix_ready(false);
     let parts = s.parts(false);
     if parts.is_empty() {
-        return Err("Nothing was recorded. Check Screen Recording and Microphone permission for ScreenLoop.".into());
+        let why = s.log_tail();
+        return Err(format!("Nothing was recorded. Check Screen Recording and Microphone permission for ScreenLoop.{}", if why.is_empty() { String::new() } else { format!(" ffmpeg said: {why}") }));
     }
     Ok(Finished { parts, duration_seconds: s.clock.round() as u32 })
 }
@@ -609,6 +631,39 @@ fn tauri_monitor(app: &tauri::AppHandle, screen: &str) -> Option<tauri::Monitor>
 unsafe extern "C" {
     fn CGPreflightScreenCaptureAccess() -> bool;
     fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+/// Grab one frame from the chosen screen to prove capture works before (and while idle, ahead of) a recording.
+/// Err carries ffmpeg's own message. Windows: not checked.
+#[tauri::command]
+pub async fn capture_check(screen: String) -> Result<(), String> {
+    #[cfg(not(target_os = "macos"))]
+    { let _ = screen; Ok(()) }
+    #[cfg(target_os = "macos")]
+    tokio::task::spawn_blocking(move || {
+        let dir = std::env::temp_dir().join(format!("sl-check-{}", uuid()));
+        let _ = std::fs::create_dir_all(&dir);
+        let log = dir.join("log");
+        let err = std::fs::File::create(&log).map(Stdio::from).unwrap_or_else(|_| Stdio::null());
+        let mut c = hidden(Command::new(ffmpeg()))
+            .args(["-nostdin", "-hide_banner", "-loglevel", "error", "-y", "-f", "avfoundation", "-framerate", "15", "-i", &format!("{screen}:none"), "-frames:v", "1", "-f", "null", "-"])
+            .stdout(Stdio::null()).stderr(err).spawn().map_err(|e| format!("ffmpeg: {e}"))?;
+        let t = Instant::now();
+        let res = loop {
+            match c.try_wait() {
+                Ok(Some(st)) if st.success() => break Ok(()),
+                Ok(Some(_)) => break Err(std::fs::read_to_string(&log).unwrap_or_default().lines().last().unwrap_or("capture failed").to_string()),
+                Ok(None) if t.elapsed() > std::time::Duration::from_secs(6) => {
+                    let _ = c.kill(); let _ = c.wait();
+                    break Err("no video frames arrived from the screen (is Screen Recording allowed for ScreenLoop, and is another app capturing the screen?)".to_string());
+                }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Err(e) => break Err(e.to_string()),
+            }
+        };
+        let _ = std::fs::remove_dir_all(&dir);
+        res
+    }).await.map_err(|e| e.to_string())?
 }
 
 #[tauri::command]

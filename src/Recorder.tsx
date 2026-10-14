@@ -174,6 +174,24 @@ export default function Recorder({ token, link, onDone, resume, filesOnly }: { t
     const t = setTimeout(() => setCount((c) => c - 1), 1000);
     return () => clearTimeout(t);
   }, [stage, count]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Prove capture works before recording (and warn as soon as setup opens); a second press records anyway.
+  const [capErr, setCapErr] = useState("");
+  const [checking, setChecking] = useState(false);
+  useEffect(() => {
+    if (stage !== "setup" || !screen || voiceOnly || !access) { setCapErr(""); return; }
+    let gone = false;
+    invoke("capture_check", { screen }).then(() => { if (!gone) setCapErr(""); }).catch((e) => { if (!gone) setCapErr(String(e)); });
+    return () => { gone = true; };
+  }, [stage, screen, voiceOnly, access]);
+  const tryStart = async () => {
+    if (!voiceOnly && !(capErr && msg === capWarn(capErr))) {
+      setChecking(true);
+      try { await invoke("capture_check", { screen }); setCapErr(""); }
+      catch (e) { setCapErr(String(e)); setMsg(capWarn(String(e))); setChecking(false); return; }
+      setChecking(false);
+    }
+    startCountdown();
+  };
   const startCountdown = () => { setMsg(""); setComments([]); uploaded.current = {}; setUpl(0); setCount(3); setStage("countdown"); };
 
   const begin = async () => {
@@ -335,7 +353,8 @@ export default function Recorder({ token, link, onDone, resume, filesOnly }: { t
           <div className="spacer" />
           <div className="stickybar">
           {msg && <p className="err">{msg}</p>}
-          <button className="btn lime big" onClick={startCountdown} disabled={voiceOnly ? !mic : !screen}><i className="rec-dot" style={{ width: 14, height: 14 }} />Start recording</button>
+          {!msg && capErr && !voiceOnly && <p className="err">{capWarn(capErr)}</p>}
+          <button className="btn lime big" onClick={tryStart} disabled={checking || (voiceOnly ? !mic : !screen)}><i className="rec-dot" style={{ width: 14, height: 14 }} />Start recording</button>
           <div className="muted" style={{ textAlign: "center", fontSize: 12 }}>{link.maxDurationMin ? `Up to ${link.maxDurationMin} min · ` : ""}This window hides while you record</div>
           </div>
         </div>
@@ -343,6 +362,8 @@ export default function Recorder({ token, link, onDone, resume, filesOnly }: { t
     </>
   );
 }
+
+const capWarn = (e: string) => `Screen capture is not working: ${e} Press Start again to record anyway.`;
 
 /** Plays the recorded parts back to back, with trim handles and comment markers on one session timeline. */
 function Player({ parts, duration, trim, setTrim, comments, audioOnly }: { parts: PartInfo[]; duration: number; trim: [number, number]; setTrim: (t: [number, number]) => void; comments: Comment[]; audioOnly: boolean }) {

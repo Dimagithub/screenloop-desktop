@@ -48,6 +48,7 @@ pub fn run() {
             recorder::set_overlay_interactive,
             recorder::raise_controls,
             recorder::screen_access,
+            recorder::capture_check,
             recorder::request_screen_access,
             recorder::show_screen_frame,
             recorder::hide_screen_frame,
